@@ -91,6 +91,11 @@ class _Rush10AppState extends State<Rush10App> {
     Participant(id: 2, name: '김민수', isHost: false),
     Participant(id: 3, name: '이지은', isHost: false),
   ];
+
+
+  // 종료 대기중인 방 목록 추가
+  List<ChallengeRoom> pendingRooms = [];
+
   File? selectedImage;
   String description = '';
 
@@ -253,6 +258,16 @@ class _Rush10AppState extends State<Rush10App> {
     }
   }
 
+  // 방을 종료 대기중 목록에 추가하는 메서드
+  void addToPendingRooms(ChallengeRoom room) {
+    setState(() {
+      // 이미 리스트에 있는지 확인
+      final exists = pendingRooms.any((r) => r.id == room.id);
+      if (!exists) {
+        pendingRooms.add(room);
+      }
+    });
+  }
 
   void handleSubmit() {
     final my = participants.firstWhere((p) => p.id == 1);
@@ -275,11 +290,49 @@ class _Rush10AppState extends State<Rush10App> {
         }).toList();
       });
       
+      // 임시 방 객체 생성 (기존 도전방 중 하나 사용 또는 새로 생성)
+      final currentRoom = ChallengeRoom(
+        id: 'current',
+        title: '10분 내에 집 주변 한 바퀴 산책하기', // 현재 참여 중인 방 제목
+        description: '함께 집 주변을 산책해봐요!',
+        hostName: '김민수',
+        participantCount: participants.length,
+        startTime: DateTime.now().subtract(const Duration(minutes: 8)), // 8분 전에 시작했다고 가정
+        code: 'RUSH429',
+      );
+      
+      // 종료 대기중 목록에 추가
+      addToPendingRooms(currentRoom);
+      
+      // 성공 메시지 표시
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('인증이 완료되었습니다!'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      
+      // 2초 후 홈 화면으로 이동
+      Future.delayed(const Duration(seconds: 2), () {
+        setState(() {
+          currentPage = Rush10Page.roomList;
+        });
+      });
+      
       print('인증 완료됨! 상태: ${participants.firstWhere((p) => p.id == 1).completed}');
     } else {
+      // 필요한 정보가 없을 때 에러 메시지
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('사진과 설명을 모두 입력해주세요.'),
+          backgroundColor: Colors.red,
+        ),
+      );
       print('인증 실패: 이미지=${isPhotoReady}, 설명=${description.trim().isNotEmpty}');
     }
   }
+
 
   // 이미지 위젯 생성 함수 수정
   Widget buildImageWidget(Participant p, {double? width, double? height, BoxFit? fit, BorderRadius? borderRadius}) {
@@ -383,6 +436,7 @@ class _Rush10AppState extends State<Rush10App> {
       case Rush10Page.roomList:
         return RoomListPage(
           rooms: rooms,
+          pendingRooms: pendingRooms, // 추가
           onRoomSelected: (room) {
             setState(() {
               currentPage = Rush10Page.lobby;

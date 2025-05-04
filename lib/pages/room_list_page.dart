@@ -5,11 +5,14 @@ import '../models/challenge_room.dart';
 class RoomListPage extends StatelessWidget {
   final List<ChallengeRoom> rooms;
   final Function(ChallengeRoom) onRoomSelected;
+  final List<ChallengeRoom> pendingRooms; // 종료 대기중인 방 목록
+
 
   const RoomListPage({
     Key? key,
     required this.rooms,
     required this.onRoomSelected,
+    this.pendingRooms = const [], // 기본값 빈 리스트
   }) : super(key: key);
 
   @override
@@ -17,6 +20,101 @@ class RoomListPage extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+
+                // 종료 대기중 섹션 (상단에 배치)
+        if (pendingRooms.isNotEmpty) ...[
+          const Text(
+            '종료 대기중',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF5A4FF3),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            height: pendingRooms.isEmpty ? 0 : 100, // 높이 조정
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: pendingRooms.length,
+              itemBuilder: (context, index) {
+                final room = pendingRooms[index];
+                final now = DateTime.now();
+                final endTime = room.startTime.add(const Duration(minutes: 10)); // 시작 시간 + 10분
+                final timeLeft = endTime.difference(now);
+                
+                // 남은 시간 계산 및 포맷
+                String timeLeftText;
+                if (timeLeft.isNegative) {
+                  timeLeftText = '인증 검증중';
+                } else {
+                  final minutes = timeLeft.inMinutes;
+                  final seconds = timeLeft.inSeconds % 60;
+                  timeLeftText = '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+                }
+                
+                return Container(
+                  width: 240,
+                  margin: const EdgeInsets.only(right: 12, bottom: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE7EAFE),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          room.title,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF5A4FF3),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF5A4FF3),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.access_time,
+                                color: Colors.white,
+                                size: 14,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                timeLeftText,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 24), // 섹션 간 간격
+        ],
+
+
+
         const Text(
           '도전방 목록',
           style: TextStyle(
