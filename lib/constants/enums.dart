@@ -1,0 +1,1 @@
+enum Rush10Page { roomList, lobby, countdown, challenge, results }
