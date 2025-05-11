@@ -5,8 +5,13 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:typed_data';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+import 'package:kakao_flutter_sdk_user/kakao_flutter_sdk_user.dart' as kakao;
+import 'dart:js' as js;
 
-import 'models/challenge_room.dart';
+import '../models/user.dart';
+import '../models/challenge_room.dart';
 import 'models/participant.dart';
 import 'pages/room_list_page.dart';
 import 'pages/lobby_page.dart';
@@ -14,158 +19,551 @@ import 'pages/countdown_page.dart';
 import 'pages/challenge_page.dart';
 import 'pages/results_page.dart';
 import 'constants/enums.dart';
-import 'utils/time_formatter.dart';
+import 'utils/time_utils.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+// 새로 추가된 import
+import 'utils/database_helper.dart';
+import 'models/participant_extended.dart';
+import 'pages/user_profile_page.dart';
+import 'repositories/challenge_repository.dart';
+import 'repositories/certification_repository.dart';
+import 'models/certification_post.dart';
+import 'pages/certification_board_page.dart';
+import 'pages/create_room_page.dart';
+import 'utils/challenge_timer.dart';
+import 'pages/widgets/app_bar_profile.dart';
+import 'pages/widgets/create_room_fab.dart';
+import 'pages/completed_challenges_page.dart';
+
+// 전역 Navigator Key 추가
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 카카오 SDK 초기화는 모바일에서만 필요, 웹에서는 index.html에서 처리
+
+  final prefs = await SharedPreferences.getInstance();
+  // await prefs.clear();
+
+  User currentUser = await DatabaseHelper.instance.getCurrentUser();
+  runApp(MyApp(currentUser: currentUser));
+} 
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final User currentUser;
+  
+  const MyApp({super.key, required this.currentUser});
+  
+  // 정적 상태 관리를 위한 변수
+  static _MyHomePageState? _instance;
+  
+  // 인스턴스 설정
+  static void setInstance(_MyHomePageState instance) {
+    _instance = instance;
+  }
+  
+  // 홈으로 이동
+  static void goToHome() {
+    if (_instance != null && _instance!.mounted) {
+      _instance!.setState(() {
+        _instance!.currentPage = Rush10Page.roomList;
+      });
+    }
+  }
+  
+  // 로비로 이동
+  static void goToLobby() {
+    if (_instance != null && _instance!.mounted) {
+      _instance!.setState(() {
+        _instance!.currentPage = Rush10Page.lobby;
+      });
+    }
+  }
+  
+  // 챌린지로 이동
+  static void goToChallenge() {
+    if (_instance != null && _instance!.mounted) {
+      _instance!.setState(() {
+        _instance!.currentPage = Rush10Page.challenge;
+        
+        // 타이머 설정
+        if (_instance!.selectedRoom != null) {
+          final now = DateTime.now();
+          final start = _instance!.selectedRoom!.startTime;
+          final end = start.add(const Duration(minutes: 10));
+          final seconds = end.difference(now).inSeconds.clamp(0, 600);
+          ChallengeTimer.instance.start(seconds);
+          print('goToChallenge: 타이머 시작, seconds=$seconds');
+        }
+      });
+    }
+  }
+  
+  // 선택된 방 설정
+  static void setSelectedRoom(ChallengeRoom room) {
+    if (_instance != null && _instance!.mounted) {
+      _instance!.setState(() {
+        _instance!.selectedRoom = room;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey, // 전역 Navigator Key 설정
       title: 'Rush10',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      home: const Rush10App(),
+      home: LoginGate(currentUser: currentUser),
       debugShowCheckedModeBanner: false,
     );
   }
 }
 
-
-
-class Rush10App extends StatefulWidget {
-  const Rush10App({super.key});
-
+class LoginGate extends StatefulWidget {
+  final User currentUser;
+  const LoginGate({Key? key, required this.currentUser}) : super(key: key);
   @override
-  State<Rush10App> createState() => _Rush10AppState();
+  State<LoginGate> createState() => _LoginGateState();
 }
 
-class _Rush10AppState extends State<Rush10App> {
+class _LoginGateState extends State<LoginGate> {
+  late User _currentUser;
+  bool _isLoggedIn = false;
+  String? _email;
+  String? _kakaoUserId;
+  String? _nickname;
+  bool _needsSignup = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentUser = widget.currentUser;
+    _checkKakaoLogin();
+    _refreshCurrentUser();
+  }
+
+  Future<void> _refreshCurrentUser() async {
+    final latestUser = await DatabaseHelper.instance.getCurrentUser();
+    setState(() {
+      _currentUser = latestUser;
+    });
+  }
+
+  Future<void> _checkKakaoLogin() async {
+    try {
+      final kakaoUser = await kakao.UserApi.instance.me();
+      setState(() {
+        _isLoggedIn = true;
+        _email = kakaoUser.kakaoAccount?.email;
+      });
+    } catch (_) {
+      setState(() {
+        _isLoggedIn = false;
+      });
+    }
+  }
+
+  Future<void> _loginWithKakao() async {
+    try {
+      if (await kakao.isKakaoTalkInstalled()) {
+        await kakao.UserApi.instance.loginWithKakaoTalk();
+      } else {
+        await kakao.UserApi.instance.loginWithKakaoAccount();
+      }
+      await _checkKakaoLogin();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('카카오 로그인 실패: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  // 웹용 카카오 로그인 함수
+  void kakaoWebLogin() {
+    final kakao = js.context['Kakao'];
+    if (kakao == null) {
+      print('Kakao JS SDK가 로드되지 않았습니다.');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kakao JS SDK가 로드되지 않았습니다.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    final auth = kakao['Auth'];
+    if (auth == null) {
+      print('Kakao.Auth 객체가 없습니다.');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kakao.Auth 객체가 없습니다.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    auth.callMethod('login', [js.JsObject.jsify({
+      'success': (res) {
+        final jsonString = js.context['JSON'].callMethod('stringify', [res]);
+        print('카카오 웹 로그인 성공: $jsonString');
+        setState(() {
+          _isLoggedIn = true;
+        });
+        // 로그인 성공 후 사용자 식별자 요청
+        getKakaoUserIdAndCheckSignup();
+      },
+      'fail': (err) {
+        final errString = js.context['JSON'].callMethod('stringify', [err]);
+        print('카카오 웹 로그인 실패: $errString');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('카카오 웹 로그인 실패: $errString'), backgroundColor: Colors.red),
+        );
+      }
+    })]);
+  }
+
+  // 카카오 사용자 식별자(user id) 요청 + 회원가입 여부 확인
+  void getKakaoUserIdAndCheckSignup() async {
+    final kakao = js.context['Kakao'];
+    if (kakao == null) return;
+    final api = kakao['API'];
+    if (api == null) return;
+    api.callMethod('request', [js.JsObject.jsify({
+      'url': '/v2/user/me',
+      'success': (res) async {
+        final jsonString = js.context['JSON'].callMethod('stringify', [res]);
+        print('카카오 사용자 정보: $jsonString');
+        final userId = res['id'];
+        print('카카오 user id: $userId');
+        final prefs = await SharedPreferences.getInstance();
+        final savedId = prefs.getString('kakao_user_id');
+        if (savedId == userId.toString()) {
+          // 기존 회원
+          print('기존 회원, 바로 로그인');
+          setState(() {
+            _kakaoUserId = userId.toString();
+            _nickname = prefs.getString('nickname');
+            _needsSignup = false;
+          });
+        } else {
+          // 신규 회원, 회원가입 필요
+          print('신규 회원, 회원가입 필요');
+          setState(() {
+            _kakaoUserId = userId.toString();
+            _needsSignup = true;
+          });
+        }
+      },
+      'fail': (err) {
+        final errString = js.context['JSON'].callMethod('stringify', [err]);
+        print('카카오 사용자 정보 조회 실패: $errString');
+      }
+    })]);
+  }
+
+  // 회원가입 완료 처리 (닉네임 저장)
+  Future<void> completeSignup() async {
+    if (_kakaoUserId == null || _nickname == null || _nickname!.trim().isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('kakao_user_id', _kakaoUserId!);
+    await prefs.setString('nickname', _nickname!);
+    await prefs.setString('current_user_name', _nickname!);
+    print('회원가입 완료: $_kakaoUserId, 닉네임: $_nickname');
+    setState(() {
+      _needsSignup = false;
+    });
+    await _refreshCurrentUser();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('회원가입이 완료되었습니다!'), backgroundColor: Colors.green),
+    );
+  }
+
+  // 앱 시작 시 저장된 user id 불러오기 예시 (원하면 자동 로그인 등에 활용 가능)
+  Future<void> loadKakaoUserId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('kakao_user_id');
+    print('저장된 카카오 user id: $userId');
+    // 필요시 setState 등으로 활용
+  }
+
+  // 카카오 로그아웃 함수 (웹/모바일 모두 지원)
+  Future<void> kakaoLogout() async {
+    try {
+      // 웹 환경: JS SDK 사용
+      final kakao = js.context['Kakao'];
+      if (kakao != null && kakao['Auth'] != null) {
+        kakao['Auth'].callMethod('logout');
+        print('카카오 웹 로그아웃 성공');
+      } else {
+        // 모바일: Flutter SDK 사용
+        await kakao.UserApi.instance.logout();
+        print('카카오 모바일 로그아웃 성공');
+      }
+      setState(() {
+        _isLoggedIn = false;
+      });
+      await _refreshCurrentUser();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('로그아웃 되었습니다.'), backgroundColor: Colors.green),
+      );
+    } catch (e) {
+      print('카카오 로그아웃 실패: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('카카오 로그아웃 실패: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  // 회원탈퇴 함수
+  Future<void> withdrawUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('kakao_user_id');
+    await prefs.remove('nickname');
+    await prefs.remove('current_user_name');
+    await prefs.remove('current_user_id');
+    await prefs.remove('current_user_profile_image');
+    print('회원탈퇴: 사용자 정보 삭제 완료');
+    setState(() {
+      _isLoggedIn = false;
+      _kakaoUserId = null;
+      _nickname = null;
+      _needsSignup = false;
+    });
+    await _refreshCurrentUser();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('회원탈퇴가 완료되었습니다.'), backgroundColor: Colors.red),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_needsSignup) {
+      // 회원가입 화면 (닉네임 입력)
+      return Scaffold(
+        backgroundColor: const Color(0xFFF6F7FB),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text('회원가입', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 24),
+                const Text('닉네임을 입력해 주세요'),
+                const SizedBox(height: 12),
+                TextField(
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: '닉네임',
+                  ),
+                  onChanged: (v) => setState(() => _nickname = v),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: (_nickname != null && _nickname!.trim().isNotEmpty)
+                      ? completeSignup
+                      : null,
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(180, 48),
+                    backgroundColor: const Color(0xFF5A4FF3),
+                  ),
+                  child: const Text('회원가입 완료', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    if (_isLoggedIn) {
+      return Stack(
+        children: [
+          MyHomePage(currentUser: _currentUser),
+          Positioned(
+            top: 40,
+            right: 24,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.black,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    elevation: 2,
+                  ),
+                  onPressed: kakaoLogout,
+                  child: const Text('로그아웃'),
+                ),
+                const SizedBox(height: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red[50],
+                    foregroundColor: Colors.red,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    elevation: 0,
+                  ),
+                  onPressed: withdrawUser,
+                  child: const Text('회원탈퇴'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+    return Scaffold(
+      backgroundColor: const Color(0xFFF6F7FB),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Image.asset('assets/kakao_logo.png', width: 80, height: 80),
+            const SizedBox(height: 24),
+            const Text('Rush10에 오신 것을 환영합니다!', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFEE500),
+                foregroundColor: Colors.black,
+                minimumSize: const Size(220, 48),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              ),
+              onPressed: _loginWithKakao,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Image.asset('assets/kakao_logo.png', width: 28, height: 28),
+                  const SizedBox(width: 12),
+                  const Text('카카오로 로그인', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            // 웹 환경에서만 노출되는 버튼
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFEE500),
+                foregroundColor: Colors.black,
+                minimumSize: const Size(220, 48),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              ),
+              onPressed: () {
+                kakaoWebLogin();
+              },
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Image.asset('assets/kakao_logo.png', width: 28, height: 28),
+                  const SizedBox(width: 12),
+                  const Text('카카오로 로그인(웹)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class MyHomePage extends StatefulWidget {
+  final User currentUser;
+  
+  const MyHomePage({super.key, required this.currentUser});
+
+  @override
+  State<MyHomePage> createState() => _MyHomePageState();
+}
+
+class _MyHomePageState extends State<MyHomePage> {
   Rush10Page currentPage = Rush10Page.roomList;
   int timeLeft = 600; // 10분
   int countdown = 5;
   DateTime? challengeStartTime;
   Timer? _timer;
 
+  // 현재 사용자 정보
+  late User currentUser;
 
-  // 샘플 도전방 목록 추가
-  List<ChallengeRoom> rooms = [
-    ChallengeRoom(
-      id: '1',
-      title: '10분 내에 집 주변 한 바퀴 산책하기',
-      description: '함께 집 주변을 산책해봐요! 운동도 되고 기분도 좋아질 거예요.',
-      hostName: '김민수',
-      participantCount: 3,
-      startTime: DateTime.now().add(const Duration(minutes: 15)),
-      code: 'RUSH429',
-    ),
-    ChallengeRoom(
-      id: '2',
-      title: '10분만에 방 정리하기',
-      description: '지저분한 방을 함께 빠르게 정리해봐요!',
-      hostName: '이지은',
-      participantCount: 2,
-      startTime: DateTime.now().add(const Duration(minutes: 30)),
-      code: 'RUSH781',
-    ),
-    ChallengeRoom(
-      id: '3',
-      title: '10분 스트레칭 챌린지',
-      description: '간단한 스트레칭으로 몸을 풀어봐요.',
-      hostName: '박준호',
-      participantCount: 5,
-      startTime: DateTime.now().add(const Duration(hours: 1)),
-      code: 'RUSH355',
-    ),
-  ];
-
-
-  List<Participant> participants = [
-    Participant(id: 1, name: '사용자', isHost: true),
-    Participant(id: 2, name: '김민수', isHost: false),
-    Participant(id: 3, name: '이지은', isHost: false),
-  ];
-
-
-  // 종료 대기중인 방 목록 추가
+  // 도전방 목록을 ChallengeRepository에서 불러와 관리
+  List<ChallengeRoom> rooms = [];
   List<ChallengeRoom> pendingRooms = [];
 
   File? selectedImage;
-  String description = '';
+  String description = ''; // 빈 문자열로 초기화
+
+  ChallengeRoom? selectedRoom;
+
+  List<String> selectedRoomParticipants = [];
+
+  bool _navigated = false;
+  bool isSubmitting = false;
+
+  List<Participant> _renderChallengePageParticipants = [];
 
   @override
   void initState() {
     super.initState();
-    _startLobbyTimer();
+    currentUser = widget.currentUser;
+    // 정적 인스턴스 설정
+    MyApp.setInstance(this);
   }
 
-  void _startLobbyTimer() {
+  @override
+  void dispose() {
     _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (challengeStartTime != null) {
-        final now = DateTime.now();
-        final diff = challengeStartTime!.difference(now);
-        if (diff.inSeconds <= 5 && diff.inSeconds > 0 && currentPage == Rush10Page.lobby) {
-          setState(() {
-            currentPage = Rush10Page.countdown;
-            countdown = diff.inSeconds;
-          });
-          _startCountdown();
-        } else if (diff.isNegative && currentPage == Rush10Page.lobby) {
-          // 만약 5초 이하를 놓쳤을 때 바로 도전 시작
-          setState(() {
-            currentPage = Rush10Page.challenge;
-            timeLeft = 600;
-          });
-          _startTimer();
-        } else {
-          setState(() {}); // 남은 시간 갱신
-        }
-      }
+    super.dispose();
+  }
+
+  // 프로필 페이지로 이동하는 메서드
+  void _navigateToProfilePage() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => UserProfilePage(
+          user: currentUser,
+          onUserUpdated: _updateCurrentUser,
+        ),
+      ),
+    );
+  }
+
+  // 사용자 정보 업데이트 콜백
+  void _updateCurrentUser(User updatedUser) async {
+    final latest = await DatabaseHelper.instance.getCurrentUser();
+    print('[DEBUG] 프로필 변경 후 최신 currentUser: id=${latest.userId}, name=${latest.username}, profileImage=${latest.profileImage}');
+    setState(() {
+      currentUser = latest;
     });
   }
 
-  void _startCountdown() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (countdown > 1) {
-        setState(() {
-          countdown--;
-        });
-      } else {
-        timer.cancel();
-        setState(() {
-          currentPage = Rush10Page.challenge;
-          timeLeft = 600;
-        });
-        _startTimer();
-      }
+  void _startCountdown(int seconds) {
+    ChallengeTimer.instance.start(seconds);
+  }
+
+  void _startChallenge(int seconds) {
+    ChallengeTimer.instance.start(seconds);
+    setState(() {
+      currentPage = Rush10Page.challenge;
     });
   }
 
   void _startTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (timeLeft > 1) {
-        setState(() {
+      setState(() {
+        if (timeLeft > 1) {
           timeLeft--;
-        });
-      } else {
-        timer.cancel();
-        setState(() {
+        } else {
+          timer.cancel();
           timeLeft = 0;
           currentPage = Rush10Page.results;
-        });
-      }
+        }
+      });
     });
   }
 
+  // 기존 'resetApp' 메서드 수정
   void resetApp() {
     setState(() {
       currentPage = Rush10Page.lobby;
@@ -173,35 +571,8 @@ class _Rush10AppState extends State<Rush10App> {
       countdown = 5;
       challengeStartTime = null;
       description = '';
-      participants = participants
-          .map((p) => Participant(
-                id: p.id,
-                name: p.name,
-                isHost: p.isHost,
-                completed: false,
-                photoBytes: null,
-                photoFile: null,
-                description: '',
-              ))
-          .toList();
     });
-    _startLobbyTimer();
-  }
-
-  String formatTime(int seconds) {
-    final mins = (seconds ~/ 60).toString().padLeft(2, '0');
-    final secs = (seconds % 60).toString().padLeft(2, '0');
-    return '$mins:$secs';
-  }
-
-  String getLobbyCountdownText() {
-    if (challengeStartTime == null) return '도전 시작 시각을 설정해주세요';
-    final now = DateTime.now();
-    final diff = challengeStartTime!.difference(now);
-    if (diff.isNegative) return '곧 도전이 시작됩니다!';
-    final min = diff.inMinutes;
-    final sec = diff.inSeconds % 60;
-    return '도전 시작까지 ${min.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
+    // _startLobbyTimer(); // 삭제: LobbyPage에서 관리
   }
 
   Future<void> _pickChallengeTime() async {
@@ -225,36 +596,44 @@ class _Rush10AppState extends State<Rush10App> {
     }
   }
 
+  // handleImageSelect 메서드 수정
   Future<void> handleImageSelect() async {
+    print('[DEBUG] handleImageSelect 호출됨');
     final picker = ImagePicker();
     final XFile? picked = await picker.pickImage(
-      source: ImageSource.camera, 
+      source: ImageSource.gallery, // 갤러리에서 선택 (카메라 대신)
       maxWidth: 600, 
       maxHeight: 600, 
       imageQuality: 80
     );
     
     if (picked != null) {
+      print('[DEBUG] 이미지 선택됨: ${picked.path}');
       // 모든 플랫폼에서 바이트 데이터로 변환
       final bytes = await picked.readAsBytes();
+      print('[DEBUG] 이미지 바이트 데이터 불러옴: ${bytes.length} 바이트');
       
       setState(() {
-        participants = participants.map((p) {
-          if (p.id == 1) {
-            return Participant(
-              id: p.id,
-              name: p.name,
-              isHost: p.isHost,
-              completed: false,
-              photoBytes: bytes,
-              description: description,
-            );
-          }
-          return p;
-        }).toList();
+        // 파일 저장
+        selectedImage = File(picked.path);
+        // description은 초기화하지 않음
+        
+        // ChallengePage에서 사용하는 Participant 목록 업데이트
+        if (currentPage == Rush10Page.challenge && _renderChallengePageParticipants.isNotEmpty) {
+          print('[DEBUG] 참가자 목록 이미지 업데이트 시작');
+          // 현재 페이지가 ChallengePage인 경우에 Participant 객체 업데이트
+          _renderChallengePageParticipants[0] = Participant(
+            id: currentUser.userId,
+            name: currentUser.username,
+            isHost: currentUser.userId == selectedRoom!.hostId,
+            profileImage: currentUser.profileImage,
+            photoBytes: bytes, // 실제 바이트 데이터 설정
+          );
+          print('[DEBUG] 참가자 목록 이미지 업데이트 완료');
+        }
       });
-      
-      print('이미지 선택 완료: ${bytes.length} 바이트');
+    } else {
+      print('[DEBUG] 이미지 선택 취소됨');
     }
   }
 
@@ -269,70 +648,29 @@ class _Rush10AppState extends State<Rush10App> {
     });
   }
 
-  void handleSubmit() {
-    final my = participants.firstWhere((p) => p.id == 1);
-    final isPhotoReady = my.photoBytes != null;
+  // 극도로 단순화된 인증 처리 함수
+  void _simpleSubmit() {
+    print('\n');
+    print('[SIMPLE] 인증 처리 함수 호출됨!!!');
     
-    if (isPhotoReady && description.trim().isNotEmpty) {
+    try {
+      // 즉시 로비로 이동
       setState(() {
-        participants = participants.map((p) {
-          if (p.id == 1) {
-            return Participant(
-              id: p.id,
-              name: p.name,
-              isHost: p.isHost,
-              completed: true,
-              photoBytes: my.photoBytes,
-              description: description,
-            );
-          }
-          return p;
-        }).toList();
+        currentPage = Rush10Page.lobby;
+        print('[SIMPLE] 로비 페이지로 이동 완료!');
       });
       
-      // 임시 방 객체 생성 (기존 도전방 중 하나 사용 또는 새로 생성)
-      final currentRoom = ChallengeRoom(
-        id: 'current',
-        title: '10분 내에 집 주변 한 바퀴 산책하기', // 현재 참여 중인 방 제목
-        description: '함께 집 주변을 산책해봐요!',
-        hostName: '김민수',
-        participantCount: participants.length,
-        startTime: DateTime.now().subtract(const Duration(minutes: 8)), // 8분 전에 시작했다고 가정
-        code: 'RUSH429',
-      );
-      
-      // 종료 대기중 목록에 추가
-      addToPendingRooms(currentRoom);
-      
-      // 성공 메시지 표시
+      // 성공 메시지
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('인증이 완료되었습니다!'),
           backgroundColor: Colors.green,
-          duration: Duration(seconds: 2),
         ),
       );
-      
-      // 2초 후 홈 화면으로 이동
-      Future.delayed(const Duration(seconds: 2), () {
-        setState(() {
-          currentPage = Rush10Page.roomList;
-        });
-      });
-      
-      print('인증 완료됨! 상태: ${participants.firstWhere((p) => p.id == 1).completed}');
-    } else {
-      // 필요한 정보가 없을 때 에러 메시지
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('사진과 설명을 모두 입력해주세요.'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      print('인증 실패: 이미지=${isPhotoReady}, 설명=${description.trim().isNotEmpty}');
+    } catch (e) {
+      print('[ERROR] 페이지 이동 중 오류: $e');
     }
   }
-
 
   // 이미지 위젯 생성 함수 수정
   Widget buildImageWidget(Participant p, {double? width, double? height, BoxFit? fit, BorderRadius? borderRadius}) {
@@ -351,131 +689,497 @@ class _Rush10AppState extends State<Rush10App> {
     }
   }
 
+  // ParticipantExtended용 이미지 위젯 (기존 함수와 함께 사용)
+  Widget buildExtendedImageWidget(ParticipantExtended p, {double? width, double? height, BoxFit? fit, BorderRadius? borderRadius}) {
+    if (p.photoBytes != null) {
+      return ClipRRect(
+        borderRadius: borderRadius ?? BorderRadius.circular(8),
+        child: Image.memory(
+          p.photoBytes!,
+          width: width,
+          height: height,
+          fit: fit ?? BoxFit.cover,
+        ),
+      );
+    } else {
+      return const SizedBox.shrink();
+    }
+  }
 
+  // 도전방 목록 불러오기
+  Future<void> _loadRooms() async {
+    final loadedRooms = await ChallengeRepository.instance.getRooms();
+    setState(() {
+      rooms = loadedRooms;
+    });
+  }
+
+  // 도전방 생성 후 목록 새로고침
+  Future<void> _onRoomCreated() async {
+    await _loadRooms();
+    setState(() {
+      currentPage = Rush10Page.roomList;
+    });
+  }
+
+  // 도전방 참가 후 목록 새로고침
+  Future<void> _onRoomJoined(ChallengeRoom room) async {
+    await _loadRooms();
+    setState(() {
+      currentPage = Rush10Page.lobby;
+      // 필요한 경우 선택된 room 정보 사용
+    });
+  }
+
+  // 샘플 도전방 자동 추가 함수
+  Future<void> insertSampleRoomsIfNeeded() async {
+    final repo = ChallengeRepository.instance;
+    final rooms = await repo.getRooms();
+    if (rooms.isEmpty) {
+      await repo.createRoom(
+        title: '10분 산책 챌린지',
+        description: '함께 10분 산책해요!',
+        hostName: '샘플호스트1',
+        hostId: 'sample_host_1',
+        startTime: DateTime.now().add(const Duration(minutes: 1)),
+      );
+      await repo.createRoom(
+        title: '정리정돈 미션',
+        description: '방을 10분만에 정리해봅시다!',
+        hostName: '샘플호스트2',
+        hostId: 'sample_host_2',
+        startTime: DateTime.now().add(const Duration(minutes: 2)),
+      );
+      await repo.createRoom(
+        title: '10분 스트레칭 챌린지',
+        description: '간단한 스트레칭으로 몸을 풀어요.',
+        hostName: '샘플호스트3',
+        hostId: 'sample_host_3',
+        startTime: DateTime.now().add(const Duration(minutes: 3)),
+      );
+    }
+  }
+
+  // LobbyPage로 이동 시 참가자 목록을 DB에서 불러와 전달
+  Future<List<Participant>> _getParticipantsForRoom(ChallengeRoom room) async {
+    final ids = await ChallengeRepository.instance.getRoomParticipants(room.id);
+
+    // currentUser의 최신 정보 사용
+    return ids.map((id) {
+      if (id == currentUser.userId) {
+        return Participant(
+          id: id,
+          name: currentUser.username,
+          isHost: id == room.hostId,
+          profileImage: currentUser.profileImage, // 최신 프로필 이미지
+        );
+      } else {
+        // 샘플 호스트 등
+        return Participant(
+          id: id,
+          name: id,
+          isHost: id == room.hostId,
+          profileImage: '',
+        );
+      }
+    }).toList();
+  }
+
+  // 참가중인 방과 참가하지 않은 방 분리
+  Future<Map<String, List<ChallengeRoom>>> _splitRoomsByParticipation() async {
+    List<ChallengeRoom> allRooms = await ChallengeRepository.instance.getRooms();
+    List<ChallengeRoom> joinedRooms = [];
+    List<ChallengeRoom> notJoinedRooms = [];
+    
+    // 결과 출력 디버깅 추가
+    print('[DEBUG] 전체 방 개수: ${allRooms.length}');
+    
+    for (final room in allRooms) {
+      final participants = await ChallengeRepository.instance.getRoomParticipants(room.id);
+      print('[DEBUG] 방 ID: ${room.id}, 참가자: $participants, 현재 사용자: ${currentUser.userId}');
+      
+      if (participants.contains(currentUser.userId)) {
+        joinedRooms.add(room);
+      } else {
+        notJoinedRooms.add(room);
+      }
+    }
+    
+    print('[DEBUG] 참가 중인 방: ${joinedRooms.length}, 참가하지 않은 방: ${notJoinedRooms.length}');
+    return {
+      'joined': joinedRooms,
+      'notJoined': notJoinedRooms,
+    };
+  }
+
+  String getLobbyCountdownText() {
+    if (selectedRoom == null) return '도전 시작 시각을 설정해주세요';
+    final now = DateTime.now();
+    final diff = selectedRoom!.startTime.difference(now);
+    if (diff.isNegative) return '곧 도전이 시작됩니다!';
+    final min = diff.inMinutes;
+    final sec = diff.inSeconds % 60;
+    return '도전 시작까지 ${min.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF6F7FB),
-      body: SafeArea(
-        child: Column(
-          children: [
-            // App header
-            Container(
-              color: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // 로고에 GestureDetector 추가 (커서 변경 포함)
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click, // 마우스 커서를 클릭 포인터로 변경
-                    child: GestureDetector(
-                      onTap: () {
-                        // 홈 화면(도전방 목록)으로 이동
-                        setState(() {
-                          currentPage = Rush10Page.roomList;
-                        });
-                      },
-                      child: RichText(
-                        text: const TextSpan(
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 24),
-                          children: [
-                            TextSpan(text: 'Rush', style: TextStyle(color: Color(0xFF5A4FF3))),
-                            TextSpan(text: '10', style: TextStyle(color: Color(0xFF8B9DFE))),
-                          ],
-                        ),
-                      ),
+      appBar: _buildAppBar(),
+      body: currentPage == Rush10Page.challenge 
+          ? _renderPage() // 챌린지 페이지는 자체 스크롤을 가지므로 추가 스크롤 제거
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: _renderPage(),
+            ),
+      floatingActionButton: (currentPage == Rush10Page.roomList)
+          ? CreateRoomFAB(
+              onPressed: () async {
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => CreateRoomPage(
+                      currentUser: currentUser,
                     ),
                   ),
-                  if (currentPage == Rush10Page.challenge)
-                    Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE7EAFE),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.access_time, color: Color(0xFF5A4FF3), size: 18),
-                          const SizedBox(width: 4),
-                          Text(
-                            formatTime(timeLeft),
-                            style: const TextStyle(
-                              color: Color(0xFF5A4FF3),
-                              fontFamily: 'RobotoMono',
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
+                );
+                if (result != null) {
+                  // 방 생성 후 목록 새로고침
+                  await _onRoomCreated();
+                }
+              },
+            )
+          : null,
+    );
+  }
+
+  // 앱바 빌드 함수
+  AppBar _buildAppBar() {
+    return AppBar(
+      backgroundColor: Colors.white,
+      elevation: 0,
+      title: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: () {
+            setState(() {
+              currentPage = Rush10Page.roomList;
+            });
+          },
+          child: RichText(
+            text: const TextSpan(
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 24),
+              children: [
+                TextSpan(text: 'Rush', style: TextStyle(color: Color(0xFF5A4FF3))),
+                TextSpan(text: '10', style: TextStyle(color: Color(0xFF8B9DFE))),
+              ],
             ),
-            // Main content
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 400),
-                    child: _renderPage(),
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
+      actions: [
+        if (currentPage == Rush10Page.challenge)
+          Container(
+            margin: const EdgeInsets.only(right: 16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE7EAFE),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Row(
+              children: [
+                const Icon(Icons.access_time, color: Color(0xFF5A4FF3), size: 18),
+                const SizedBox(width: 4),
+                Text(
+                  formatTime(timeLeft),
+                  style: const TextStyle(
+                    color: Color(0xFF5A4FF3),
+                    fontFamily: 'RobotoMono',
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (currentPage == Rush10Page.roomList || currentPage == Rush10Page.lobby)
+          AppBarProfile(
+            profileImage: currentUser.profileImage,
+            username: currentUser.username,
+            onTap: _navigateToProfilePage,
+          ),
+      ],
     );
   }
 
   Widget _renderPage() {
+    print('[DEBUG] _renderPage 호출됨 - currentPage=$currentPage');
+    
     switch (currentPage) {
       case Rush10Page.roomList:
-        return RoomListPage(
-          rooms: rooms,
-          pendingRooms: pendingRooms, // 추가
-          onRoomSelected: (room) {
-            setState(() {
-              currentPage = Rush10Page.lobby;
-              // 필요한 경우 선택된 room 정보 사용
-            });
+        return FutureBuilder<Map<String, List<ChallengeRoom>>>(
+          future: _splitRoomsByParticipation(),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final joinedRooms = snapshot.data!['joined']!;
+            final notJoinedRooms = snapshot.data!['notJoined']!;
+            final now = DateTime.now();
+            
+            // 시작 대기중인 방 (시작 전)
+            final waitingRooms = joinedRooms.where((room) => room.startTime.isAfter(now)).toList();
+            
+            // 진행 중인 방 (시작 후, 종료 전 - 10분 이내)
+            final runningRooms = joinedRooms.where((room) {
+              final endTime = room.startTime.add(const Duration(minutes: 10));
+              return !room.startTime.isAfter(now) && now.isBefore(endTime);
+            }).toList();
+            
+            return RoomListPage(
+              rooms: notJoinedRooms,
+              waitingRooms: waitingRooms,
+              runningRooms: runningRooms,
+              currentUser: currentUser,
+              onRoomSelected: _onRoomSelected,
+            );
           },
         );
       case Rush10Page.lobby:
+        if (selectedRoom == null) return const SizedBox.shrink();
         return LobbyPage(
-          participants: participants,
-          challengeStartTime: challengeStartTime,
+          challengeStartTime: selectedRoom!.startTime,
           onPickTime: _pickChallengeTime,
           getLobbyCountdownText: getLobbyCountdownText,
-        );
-      case Rush10Page.countdown:
-        return CountdownPage(
-          countdown: countdown,
-        );
-      case Rush10Page.challenge:
-        return ChallengePage(
-          timeLeft: timeLeft,
-          description: description,
-          onDescriptionChanged: (value) {
+          currentUser: currentUser,
+          room: selectedRoom!,
+          onRoomDeleted: () {
             setState(() {
-              description = value;
+              currentPage = Rush10Page.roomList;
+              selectedRoom = null;
             });
           },
-          participants: participants,
-          handleImageSelect: handleImageSelect,
-          handleSubmit: handleSubmit,
+        );
+      case Rush10Page.countdown:
+        return const CountdownPage();
+      case Rush10Page.challenge:
+        print('[DEBUG-RENDER] _renderPage: Challenge 페이지 렌더링 시작');
+        print('[DEBUG-RENDER] selectedRoom: ${selectedRoom?.id}');
+        
+        // 도전방 정보가 없으면 빈 화면을 보여줌 (레이아웃 오류 방지)
+        if (selectedRoom == null) {
+          print('[DEBUG-RENDER] selectedRoom이 null임');
+          return const Center(
+            child: Text('도전방 정보를 불러올 수 없습니다', style: TextStyle(color: Colors.grey)),
+          );
+        }
+        
+        // ChallengeTimer 설정 확인
+        final timer = ChallengeTimer.instance;
+        if (!timer.isRunning) {
+          print('[DEBUG-RENDER] 타이머가 실행 중이 아니어서 시작함');
+          final now = DateTime.now();
+          final start = selectedRoom!.startTime;
+          final end = start.add(const Duration(minutes: 10));
+          final seconds = end.difference(now).inSeconds.clamp(0, 600);
+          timer.start(seconds);
+        }
+        
+        // Participant 목록 초기화 (이미지 선택에서 사용됨)
+        _renderChallengePageParticipants = [
+          Participant(
+            id: currentUser.userId,
+            name: currentUser.username,
+            isHost: currentUser.userId == selectedRoom!.hostId,
+            profileImage: currentUser.profileImage,
+            photoBytes: null, // 초기에는 null로 설정
+          )
+        ];
+        
+        // 이미지가 선택되어 있으면 바이트 데이터 설정
+        if (selectedImage != null) {
+          print('[DEBUG-RENDER] 선택된 이미지가 있음, 바이트 데이터 설정');
+          // 비동기 작업이지만 UI 업데이트를 위해 즉시 Future 처리
+          selectedImage!.readAsBytes().then((bytes) {
+            if (_renderChallengePageParticipants.isNotEmpty) {
+              setState(() {
+                _renderChallengePageParticipants[0] = Participant(
+                  id: currentUser.userId,
+                  name: currentUser.username,
+                  isHost: currentUser.userId == selectedRoom!.hostId,
+                  profileImage: currentUser.profileImage,
+                  photoBytes: bytes, // 실제 바이트 데이터
+                );
+              });
+              print('[DEBUG-RENDER] 이미지 바이트 데이터 설정 완료: ${bytes.length} 바이트');
+            }
+          });
+        }
+        
+        print('[DEBUG-RENDER] ChallengePage 위젯 생성 시작');
+        print('[DEBUG-RENDER] _simpleSubmit 함수: ${_simpleSubmit.runtimeType}');
+        print('[DEBUG-RENDER] _simpleImageSelect 함수: ${_simpleImageSelect.runtimeType}');
+        
+        final challengePage = ChallengePage(
+          currentUserId: currentUser.userId,
+          description: description,
+          onDescriptionChanged: (value) { 
+            print('[DEBUG-INPUT] 설명 변경됨: "$value"');
+            setState(() { 
+              description = value; 
+            });
+          },
+          participants: _renderChallengePageParticipants,
+          handleImageSelect: _simpleImageSelect,
+          handleSubmit: _simpleSubmit,
           buildImageWidget: buildImageWidget,
+          room: selectedRoom!,
+          currentUser: currentUser,
+          isSubmitting: isSubmitting,
+          onBackToHome: () {
+            setState(() { currentPage = Rush10Page.roomList; });
+          },
+          onBackToLobby: () {
+            setState(() { currentPage = Rush10Page.lobby; });
+          },
+        );
+        
+        print('[DEBUG-RENDER] ChallengePage 위젯 생성 완료');
+        
+        return WillPopScope(
+          onWillPop: () async {
+            print('[DEBUG-RENDER] ChallengePage - WillPopScope 호출됨');
+            setState(() { currentPage = Rush10Page.lobby; });
+            return false;
+          },
+          child: challengePage,
         );
       case Rush10Page.results:
         return ResultsPage(
-          participants: participants,
+          participants: [
+            Participant(
+              id: currentUser.userId,
+              name: currentUser.username,
+              isHost: true,
+            )
+          ],
           resetApp: resetApp,
           buildImageWidget: buildImageWidget,
         );
     }
   }
 
+  // 이미 참가한 방인지 확인하는 도우미 메서드
+  Future<bool> _isAlreadyJoined(String roomId) async {
+    final participants = await ChallengeRepository.instance.getRoomParticipants(roomId);
+    return participants.contains(currentUser.userId);
+  }
+
+  // onRoomSelected 함수 (방 선택 시 호출)
+  void _onRoomSelected(ChallengeRoom room) async {
+    print('[DEBUG] 방 선택됨: roomId=${room.id}, 현재 사용자: ${currentUser.userId}');
+    
+    try {
+      // 방에 참가 시도
+      final alreadyJoined = await _isAlreadyJoined(room.id);
+      print('[DEBUG] 이미 참가 여부: $alreadyJoined');
+      
+      if (!alreadyJoined) {
+        print('[DEBUG] 새로운 방 참가 시도: ${room.id}');
+        
+        // 참가 전 참가자 목록 확인
+        final beforeParticipants = await ChallengeRepository.instance.getRoomParticipants(room.id);
+        print('[DEBUG] 참가 전 참가자 목록: $beforeParticipants');
+        
+        // 참가 시도
+        final joinSuccess = await ChallengeRepository.instance.joinRoom(room.id, currentUser.userId);
+        
+        // 참가 후 참가자 목록 확인
+        final afterParticipants = await ChallengeRepository.instance.getRoomParticipants(room.id);
+        print('[DEBUG] 참가 후 참가자 목록: $afterParticipants');
+        
+        if (joinSuccess) {
+          print('[DEBUG] 방 참가 성공! roomId=${room.id}');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('방에 참가했습니다.'), backgroundColor: Colors.green)
+          );
+        } else {
+          print('[ERROR] 방 참가 실패! roomId=${room.id}');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('방 참가에 실패했습니다. 다시 시도해주세요.'), backgroundColor: Colors.red)
+          );
+          return;
+        }
+      } else {
+        print('[DEBUG] 이미 참가한 방입니다. roomId=${room.id}');
+      }
+      
+      // 참가자 목록 업데이트
+      final participants = await ChallengeRepository.instance.getRoomParticipants(room.id);
+      print('[DEBUG] 최종 참가자 목록: $participants');
+      
+      setState(() {
+        currentPage = Rush10Page.lobby;
+        selectedRoom = room;
+        selectedRoomParticipants = participants;
+      });
+    } catch (e) {
+      print('[ERROR] 방 참가 중 오류 발생: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('오류가 발생했습니다: $e'), backgroundColor: Colors.red)
+      );
+    }
+  }
+
+  // 이미지 선택 함수 - 프로필 이미지 선택과 동일하게 구현
+  void _simpleImageSelect() async {
+    // 프로필 이미지 선택과 완전히 동일한 코드 구현
+    print('[DEBUG] 이미지 선택 시작 (프로필 이미지 선택 코드와 동일하게 구현)');
+    
+    final picker = ImagePicker();
+    final XFile? image = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 800,
+      maxHeight: 800,
+      imageQuality: 90,
+    );
+
+    if (image != null) {
+      print('[DEBUG] 이미지 선택됨: ${image.path}');
+      
+      // 이미지 데이터 읽기
+      final bytes = await image.readAsBytes();
+      print('[DEBUG] 이미지 데이터 크기: ${bytes.length} 바이트');
+      
+      // UI 업데이트
+      setState(() {
+        selectedImage = File(image.path);
+        
+        // 참가자 목록 업데이트
+        if (_renderChallengePageParticipants.isNotEmpty) {
+          _renderChallengePageParticipants[0] = Participant(
+            id: currentUser.userId,
+            name: currentUser.username,
+            isHost: currentUser.userId == selectedRoom?.hostId,
+            profileImage: currentUser.profileImage,
+            photoBytes: bytes,
+          );
+          
+          // 로그 출력
+          print('[DEBUG] 참가자 이미지 업데이트됨');
+        }
+      });
+      
+      // 성공 메시지
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('이미지가 선택되었습니다'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 1),
+        ),
+      );
+    } else {
+      print('[DEBUG] 이미지 선택 취소됨');
+    }
+  }
 }

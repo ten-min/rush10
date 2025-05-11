@@ -31,8 +31,41 @@
 
   <title>rush10</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- SQLite 웹 워커 스크립트 -->
+  <script src="assets/packages/sqflite_common_ffi_web/sqlite3.js"></script>
+  <script src="assets/packages/sqflite_common_ffi_web/sqflite_sw.js"></script>
+
+  <!-- 카카오 JavaScript SDK 추가 -->
+  <script src="https://developers.kakao.com/sdk/js/kakao.js"></script>
+  <script>
+    Kakao.init('c9f4461cb68c63b8d33457c2bae174a8');
+    // Kakao.isInitialized()가 true면 정상
+    console.log('Kakao SDK initialized:', Kakao.isInitialized());
+  </script>
+
+  <script>
+    // The value below is injected by flutter build, do not touch.
+    const serviceWorkerVersion = null;
+  </script>
+  <!-- This script adds the flutter initialization JS code -->
+  <script src="flutter.js" defer></script>
 </head>
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    window.addEventListener('load', function(ev) {
+      // Download main.dart.js
+      _flutter.loader.loadEntrypoint({
+        serviceWorker: {
+          serviceWorkerVersion: serviceWorkerVersion,
+        },
+        onEntrypointLoaded: function(engineInitializer) {
+          engineInitializer.initializeEngine().then(function(appRunner) {
+            appRunner.runApp();
+          });
+        }
+      });
+    });
+  </script>
 </body>
 </html>

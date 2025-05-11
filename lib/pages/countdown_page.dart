@@ -1,12 +1,30 @@
 import 'package:flutter/material.dart';
+import '../utils/challenge_timer.dart';
 
-class CountdownPage extends StatelessWidget {
-  final int countdown;
+class CountdownPage extends StatefulWidget {
+  const CountdownPage({Key? key}) : super(key: key);
 
-  const CountdownPage({
-    Key? key,
-    required this.countdown,
-  }) : super(key: key);
+  @override
+  State<CountdownPage> createState() => _CountdownPageState();
+}
+
+class _CountdownPageState extends State<CountdownPage> {
+  late ChallengeTimer timer;
+
+  @override
+  void initState() {
+    super.initState();
+    timer = ChallengeTimer.instance;
+    timer.addListener(_onTick);
+  }
+
+  void _onTick() => setState(() {});
+
+  @override
+  void dispose() {
+    timer.removeListener(_onTick);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14,7 +32,7 @@ class CountdownPage extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text('$countdown', style: const TextStyle(fontSize: 64, fontWeight: FontWeight.bold, color: Color(0xFF5A4FF3))),
+          Text('${timer.secondsLeft}', style: const TextStyle(fontSize: 64, fontWeight: FontWeight.bold, color: Color(0xFF5A4FF3))),
           const SizedBox(height: 24),
           const Text('잠시 후 도전이 시작됩니다!', style: TextStyle(fontSize: 20, color: Colors.black87)),
           const SizedBox(height: 8),
