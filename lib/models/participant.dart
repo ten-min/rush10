@@ -6,7 +6,7 @@ class Participant {
   final String id;
   final String name;
   final bool isHost;
-  final String profileImage;
+  final String profileImageUrl;
   bool completed;
   Uint8List? photoBytes;
   File? photoFile;
@@ -16,7 +16,7 @@ class Participant {
     required this.id,
     required this.name,
     required this.isHost,
-    this.profileImage = '',
+    this.profileImageUrl = '',
     this.completed = false,
     this.photoBytes,
     this.photoFile,

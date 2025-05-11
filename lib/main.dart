@@ -9,6 +9,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:kakao_flutter_sdk_user/kakao_flutter_sdk_user.dart' as kakao;
 import 'dart:js' as js;
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/user.dart';
 import '../models/challenge_room.dart';
@@ -40,20 +43,22 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Firebase 초기화
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   // 카카오 SDK 초기화는 모바일에서만 필요, 웹에서는 index.html에서 처리
 
   final prefs = await SharedPreferences.getInstance();
   // await prefs.clear();
 
-  User currentUser = await DatabaseHelper.instance.getCurrentUser();
-  runApp(MyApp(currentUser: currentUser));
+  runApp(const MyApp());
 } 
 
 class MyApp extends StatelessWidget {
-  final User currentUser;
-  
-  const MyApp({super.key, required this.currentUser});
+  const MyApp({super.key});
   
   // 정적 상태 관리를 위한 변수
   static _MyHomePageState? _instance;
@@ -118,54 +123,85 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      home: LoginGate(currentUser: currentUser),
+      home: const LoginGate(),
       debugShowCheckedModeBanner: false,
     );
   }
 }
 
 class LoginGate extends StatefulWidget {
-  final User currentUser;
-  const LoginGate({Key? key, required this.currentUser}) : super(key: key);
+  const LoginGate({Key? key}) : super(key: key);
   @override
   State<LoginGate> createState() => _LoginGateState();
 }
 
 class _LoginGateState extends State<LoginGate> {
-  late User _currentUser;
+  User? _currentUser;
   bool _isLoggedIn = false;
   String? _email;
   String? _kakaoUserId;
   String? _nickname;
+  String? _profileImageUrl;
   bool _needsSignup = false;
 
   @override
   void initState() {
     super.initState();
-    _currentUser = widget.currentUser;
     _checkKakaoLogin();
-    _refreshCurrentUser();
-  }
-
-  Future<void> _refreshCurrentUser() async {
-    final latestUser = await DatabaseHelper.instance.getCurrentUser();
-    setState(() {
-      _currentUser = latestUser;
-    });
   }
 
   Future<void> _checkKakaoLogin() async {
     try {
       final kakaoUser = await kakao.UserApi.instance.me();
       setState(() {
-        _isLoggedIn = true;
         _email = kakaoUser.kakaoAccount?.email;
+        _kakaoUserId = kakaoUser.id.toString();
+        _nickname = kakaoUser.kakaoAccount?.profile?.nickname ?? '사용자';
+        _profileImageUrl = kakaoUser.kakaoAccount?.profile?.profileImageUrl;
+      });
+      await saveKakaoUserToFirestore(kakaoUser);
+      // Firestore에서 users 문서 존재 여부 확인
+      final doc = await FirebaseFirestore.instance.collection('users').doc(_kakaoUserId!).get();
+      if (!doc.exists) {
+        setState(() {
+          _needsSignup = true;
+          _isLoggedIn = false;
+          _currentUser = null;
+        });
+        return;
+      }
+      // 기존 회원이면 정상 로그인
+      final user = await DatabaseHelper.instance.getCurrentUser(
+        userId: _kakaoUserId!,
+        nickname: _nickname!,
+        email: _email!,
+        profileImageUrl: _profileImageUrl,
+      );
+      setState(() {
+        _currentUser = user;
+        _isLoggedIn = true;
+        _needsSignup = false;
       });
     } catch (_) {
       setState(() {
         _isLoggedIn = false;
       });
     }
+  }
+
+  Future<void> saveKakaoUserToFirestore(kakao.User kakaoUser) async {
+    final userId = kakaoUser.id.toString();
+    final nickname = kakaoUser.kakaoAccount?.profile?.nickname ?? '사용자';
+    final profileImageUrl = kakaoUser.kakaoAccount?.profile?.profileImageUrl ?? '';
+    final email = kakaoUser.kakaoAccount?.email ?? '';
+    final now = DateTime.now();
+    await FirebaseFirestore.instance.collection('users').doc(userId).set({
+      'email': email,
+      'nickname': nickname,
+      'profileImageUrl': profileImageUrl,
+      'createdAt': now,
+      'updatedAt': now,
+    }, SetOptions(merge: true));
   }
 
   Future<void> _loginWithKakao() async {
@@ -230,28 +266,52 @@ class _LoginGateState extends State<LoginGate> {
     api.callMethod('request', [js.JsObject.jsify({
       'url': '/v2/user/me',
       'success': (res) async {
-        final jsonString = js.context['JSON'].callMethod('stringify', [res]);
-        print('카카오 사용자 정보: $jsonString');
-        final userId = res['id'];
-        print('카카오 user id: $userId');
-        final prefs = await SharedPreferences.getInstance();
-        final savedId = prefs.getString('kakao_user_id');
-        if (savedId == userId.toString()) {
-          // 기존 회원
-          print('기존 회원, 바로 로그인');
+        final userId = res['id'].toString();
+        final nickname = res['kakao_account']?['profile']?['nickname'] ?? '사용자';
+        final email = res['kakao_account']?['email'] ?? '';
+        final profileImageUrl = res['kakao_account']?['profile']?['profile_image_url'] ?? '';
+
+        // Firestore에서 users 문서 존재 여부 확인
+        final doc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
+        if (!doc.exists) {
           setState(() {
-            _kakaoUserId = userId.toString();
-            _nickname = prefs.getString('nickname');
-            _needsSignup = false;
-          });
-        } else {
-          // 신규 회원, 회원가입 필요
-          print('신규 회원, 회원가입 필요');
-          setState(() {
-            _kakaoUserId = userId.toString();
+            _kakaoUserId = userId;
+            _nickname = nickname;
+            _email = email;
+            _profileImageUrl = profileImageUrl;
             _needsSignup = true;
+            _isLoggedIn = false;
+            _currentUser = null;
           });
+          return;
         }
+
+        // Firestore에 저장
+        await FirebaseFirestore.instance.collection('users').doc(userId).set({
+          'email': email,
+          'nickname': nickname,
+          'profileImageUrl': profileImageUrl,
+          'createdAt': DateTime.now(),
+          'updatedAt': DateTime.now(),
+        }, SetOptions(merge: true));
+
+        // Firestore에서 유저 정보 읽어오기
+        final user = await DatabaseHelper.instance.getCurrentUser(
+          userId: userId,
+          nickname: nickname,
+          email: email,
+          profileImageUrl: profileImageUrl,
+        );
+
+        setState(() {
+          _kakaoUserId = userId;
+          _nickname = nickname;
+          _email = email;
+          _profileImageUrl = profileImageUrl;
+          _currentUser = user;
+          _isLoggedIn = true;
+          _needsSignup = false;
+        });
       },
       'fail': (err) {
         final errString = js.context['JSON'].callMethod('stringify', [err]);
@@ -268,12 +328,35 @@ class _LoginGateState extends State<LoginGate> {
     await prefs.setString('nickname', _nickname!);
     await prefs.setString('current_user_name', _nickname!);
     print('회원가입 완료: $_kakaoUserId, 닉네임: $_nickname');
+    await FirebaseFirestore.instance.collection('users').doc(_kakaoUserId!).set({
+      'email': _email ?? '',
+      'nickname': _nickname!,
+      'profileImageUrl': _profileImageUrl ?? '',
+      'createdAt': DateTime.now(),
+      'updatedAt': DateTime.now(),
+    }, SetOptions(merge: true));
+
+    // Firestore에 저장한 값을 직접 읽어옴
+    final user = await DatabaseHelper.instance.getCurrentUser(
+      userId: _kakaoUserId!,
+      nickname: _nickname!,
+      email: _email ?? '',
+      profileImageUrl: _profileImageUrl,
+    );
+
     setState(() {
       _needsSignup = false;
+      _isLoggedIn = true;
+      _currentUser = user;
     });
-    await _refreshCurrentUser();
+
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('회원가입이 완료되었습니다!'), backgroundColor: Colors.green),
+    );
+
+    // 강제 화면 전환
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => MyHomePage(currentUser: user)),
     );
   }
 
@@ -301,7 +384,6 @@ class _LoginGateState extends State<LoginGate> {
       setState(() {
         _isLoggedIn = false;
       });
-      await _refreshCurrentUser();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('로그아웃 되었습니다.'), backgroundColor: Colors.green),
       );
@@ -316,6 +398,10 @@ class _LoginGateState extends State<LoginGate> {
   // 회원탈퇴 함수
   Future<void> withdrawUser() async {
     final prefs = await SharedPreferences.getInstance();
+    final userId = _kakaoUserId;
+    if (userId != null) {
+      await FirebaseFirestore.instance.collection('users').doc(userId).delete();
+    }
     await prefs.remove('kakao_user_id');
     await prefs.remove('nickname');
     await prefs.remove('current_user_name');
@@ -328,7 +414,6 @@ class _LoginGateState extends State<LoginGate> {
       _nickname = null;
       _needsSignup = false;
     });
-    await _refreshCurrentUser();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('회원탈퇴가 완료되었습니다.'), backgroundColor: Colors.red),
     );
@@ -336,139 +421,153 @@ class _LoginGateState extends State<LoginGate> {
 
   @override
   Widget build(BuildContext context) {
-    if (_needsSignup) {
-      // 회원가입 화면 (닉네임 입력)
-      return Scaffold(
-        backgroundColor: const Color(0xFFF6F7FB),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text('회원가입', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 24),
-                const Text('닉네임을 입력해 주세요'),
-                const SizedBox(height: 12),
-                TextField(
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    hintText: '닉네임',
-                  ),
-                  onChanged: (v) => setState(() => _nickname = v),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isDesktop = constraints.maxWidth > 800;
+        final maxContentWidth = 700.0;
+        Widget content;
+        if (_needsSignup) {
+          content = Scaffold(
+            backgroundColor: const Color(0xFFF6F7FB),
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('회원가입', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 24),
+                    const Text('닉네임을 입력해 주세요'),
+                    const SizedBox(height: 12),
+                    TextField(
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        hintText: '닉네임',
+                      ),
+                      onChanged: (v) => setState(() => _nickname = v),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      onPressed: (_nickname != null && _nickname!.trim().isNotEmpty)
+                          ? completeSignup
+                          : null,
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(180, 48),
+                        backgroundColor: const Color(0xFF5A4FF3),
+                      ),
+                      child: const Text('회원가입 완료', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: (_nickname != null && _nickname!.trim().isNotEmpty)
-                      ? completeSignup
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    minimumSize: const Size(180, 48),
-                    backgroundColor: const Color(0xFF5A4FF3),
-                  ),
-                  child: const Text('회원가입 완료', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-    if (_isLoggedIn) {
-      return Stack(
-        children: [
-          MyHomePage(currentUser: _currentUser),
-          Positioned(
-            top: 40,
-            right: 24,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    foregroundColor: Colors.black,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                    elevation: 2,
-                  ),
-                  onPressed: kakaoLogout,
-                  child: const Text('로그아웃'),
-                ),
-                const SizedBox(height: 8),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red[50],
-                    foregroundColor: Colors.red,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                    elevation: 0,
-                  ),
-                  onPressed: withdrawUser,
-                  child: const Text('회원탈퇴'),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-    }
-    return Scaffold(
-      backgroundColor: const Color(0xFFF6F7FB),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Image.asset('assets/kakao_logo.png', width: 80, height: 80),
-            const SizedBox(height: 24),
-            const Text('Rush10에 오신 것을 환영합니다!', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFEE500),
-                foregroundColor: Colors.black,
-                minimumSize: const Size(220, 48),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
               ),
-              onPressed: _loginWithKakao,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
+            ),
+          );
+        } else if (_isLoggedIn && _currentUser != null) {
+          content = Stack(
+            children: [
+              MyHomePage(currentUser: _currentUser!),
+              Positioned(
+                top: 40,
+                right: 24,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                        elevation: 2,
+                      ),
+                      onPressed: kakaoLogout,
+                      child: const Text('로그아웃'),
+                    ),
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red[50],
+                        foregroundColor: Colors.red,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                        elevation: 0,
+                      ),
+                      onPressed: withdrawUser,
+                      child: const Text('회원탈퇴'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        } else {
+          content = Scaffold(
+            backgroundColor: const Color(0xFFF6F7FB),
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Image.asset('assets/kakao_logo.png', width: 28, height: 28),
-                  const SizedBox(width: 12),
-                  const Text('카카오로 로그인', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  Image.asset('assets/kakao_logo.png', width: 80, height: 80),
+                  const SizedBox(height: 24),
+                  const Text('Rush10에 오신 것을 환영합니다!', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFEE500),
+                      foregroundColor: Colors.black,
+                      minimumSize: const Size(220, 48),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    ),
+                    onPressed: _loginWithKakao,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Image.asset('assets/kakao_logo.png', width: 28, height: 28),
+                        const SizedBox(width: 12),
+                        const Text('카카오로 로그인', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFEE500),
+                      foregroundColor: Colors.black,
+                      minimumSize: const Size(220, 48),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    ),
+                    onPressed: () {
+                      kakaoWebLogin();
+                    },
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Image.asset('assets/kakao_logo.png', width: 28, height: 28),
+                        const SizedBox(width: 12),
+                        const Text('카카오로 로그인(웹)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(height: 16),
-            // 웹 환경에서만 노출되는 버튼
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFEE500),
-                foregroundColor: Colors.black,
-                minimumSize: const Size(220, 48),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-              ),
-              onPressed: () {
-                kakaoWebLogin();
-              },
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Image.asset('assets/kakao_logo.png', width: 28, height: 28),
-                  const SizedBox(width: 12),
-                  const Text('카카오로 로그인(웹)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                ],
-              ),
+          );
+        }
+        if (isDesktop) {
+          return Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxContentWidth),
+              child: content,
             ),
-          ],
-        ),
-      ),
+          );
+        } else {
+          return content;
+        }
+      },
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
   final User currentUser;
-  
   const MyHomePage({super.key, required this.currentUser});
 
   @override
@@ -476,14 +575,12 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
+  late User currentUser;
   Rush10Page currentPage = Rush10Page.roomList;
   int timeLeft = 600; // 10분
   int countdown = 5;
   DateTime? challengeStartTime;
   Timer? _timer;
-
-  // 현재 사용자 정보
-  late User currentUser;
 
   // 도전방 목록을 ChallengeRepository에서 불러와 관리
   List<ChallengeRoom> rooms = [];
@@ -505,7 +602,6 @@ class _MyHomePageState extends State<MyHomePage> {
   void initState() {
     super.initState();
     currentUser = widget.currentUser;
-    // 정적 인스턴스 설정
     MyApp.setInstance(this);
   }
 
@@ -530,8 +626,13 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // 사용자 정보 업데이트 콜백
   void _updateCurrentUser(User updatedUser) async {
-    final latest = await DatabaseHelper.instance.getCurrentUser();
-    print('[DEBUG] 프로필 변경 후 최신 currentUser: id=${latest.userId}, name=${latest.username}, profileImage=${latest.profileImage}');
+    final latest = await DatabaseHelper.instance.getCurrentUser(
+      userId: updatedUser.id,
+      nickname: updatedUser.nickname,
+      email: updatedUser.email,
+      profileImageUrl: updatedUser.profileImageUrl,
+    );
+    print('[DEBUG] 프로필 변경 후 최신 currentUser: id=${latest.id}, name=${latest.nickname}, profileImage=${latest.profileImageUrl}');
     setState(() {
       currentUser = latest;
     });
@@ -623,10 +724,10 @@ class _MyHomePageState extends State<MyHomePage> {
           print('[DEBUG] 참가자 목록 이미지 업데이트 시작');
           // 현재 페이지가 ChallengePage인 경우에 Participant 객체 업데이트
           _renderChallengePageParticipants[0] = Participant(
-            id: currentUser.userId,
-            name: currentUser.username,
-            isHost: currentUser.userId == selectedRoom!.hostId,
-            profileImage: currentUser.profileImage,
+            id: currentUser.id,
+            name: currentUser.nickname,
+            isHost: currentUser.id == selectedRoom!.hostId,
+            profileImageUrl: currentUser.profileImageUrl ?? '',
             photoBytes: bytes, // 실제 바이트 데이터 설정
           );
           print('[DEBUG] 참가자 목록 이미지 업데이트 완료');
@@ -766,12 +867,12 @@ class _MyHomePageState extends State<MyHomePage> {
 
     // currentUser의 최신 정보 사용
     return ids.map((id) {
-      if (id == currentUser.userId) {
+      if (id == currentUser.id) {
         return Participant(
           id: id,
-          name: currentUser.username,
+          name: currentUser.nickname,
           isHost: id == room.hostId,
-          profileImage: currentUser.profileImage, // 최신 프로필 이미지
+          profileImageUrl: currentUser.profileImageUrl ?? '',
         );
       } else {
         // 샘플 호스트 등
@@ -779,7 +880,7 @@ class _MyHomePageState extends State<MyHomePage> {
           id: id,
           name: id,
           isHost: id == room.hostId,
-          profileImage: '',
+          profileImageUrl: '',
         );
       }
     }).toList();
@@ -796,9 +897,9 @@ class _MyHomePageState extends State<MyHomePage> {
     
     for (final room in allRooms) {
       final participants = await ChallengeRepository.instance.getRoomParticipants(room.id);
-      print('[DEBUG] 방 ID: ${room.id}, 참가자: $participants, 현재 사용자: ${currentUser.userId}');
+      print('[DEBUG] 방 ID: ${room.id}, 참가자: $participants, 현재 사용자: ${currentUser.id}');
       
-      if (participants.contains(currentUser.userId)) {
+      if (participants.contains(currentUser.id)) {
         joinedRooms.add(room);
       } else {
         notJoinedRooms.add(room);
@@ -824,33 +925,49 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF6F7FB),
-      appBar: _buildAppBar(),
-      body: currentPage == Rush10Page.challenge 
-          ? _renderPage() // 챌린지 페이지는 자체 스크롤을 가지므로 추가 스크롤 제거
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: _renderPage(),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isDesktop = constraints.maxWidth > 800;
+        final maxContentWidth = 900.0;
+        Widget scaffold = Scaffold(
+          backgroundColor: const Color(0xFFF6F7FB),
+          appBar: _buildAppBar(),
+          body: currentPage == Rush10Page.challenge 
+              ? _renderPage() // 챌린지 페이지는 자체 스크롤을 가지므로 추가 스크롤 제거
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(16.0),
+                  child: _renderPage(),
+                ),
+          floatingActionButton: (currentPage == Rush10Page.roomList)
+              ? CreateRoomFAB(
+                  onPressed: () async {
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => CreateRoomPage(
+                          currentUser: currentUser,
+                        ),
+                      ),
+                    );
+                    if (result != null) {
+                      // 방 생성 후 목록 새로고침
+                      await _onRoomCreated();
+                    }
+                  },
+                )
+              : null,
+        );
+        if (isDesktop) {
+          return Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxContentWidth),
+              child: scaffold,
             ),
-      floatingActionButton: (currentPage == Rush10Page.roomList)
-          ? CreateRoomFAB(
-              onPressed: () async {
-                final result = await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => CreateRoomPage(
-                      currentUser: currentUser,
-                    ),
-                  ),
-                );
-                if (result != null) {
-                  // 방 생성 후 목록 새로고침
-                  await _onRoomCreated();
-                }
-              },
-            )
-          : null,
+          );
+        } else {
+          return scaffold;
+        }
+      },
     );
   }
 
@@ -904,8 +1021,8 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
         if (currentPage == Rush10Page.roomList || currentPage == Rush10Page.lobby)
           AppBarProfile(
-            profileImage: currentUser.profileImage,
-            username: currentUser.username,
+            profileImageUrl: currentUser.profileImageUrl,
+            nickname: currentUser.nickname,
             onTap: _navigateToProfilePage,
           ),
       ],
@@ -988,10 +1105,10 @@ class _MyHomePageState extends State<MyHomePage> {
         // Participant 목록 초기화 (이미지 선택에서 사용됨)
         _renderChallengePageParticipants = [
           Participant(
-            id: currentUser.userId,
-            name: currentUser.username,
-            isHost: currentUser.userId == selectedRoom!.hostId,
-            profileImage: currentUser.profileImage,
+            id: currentUser.id,
+            name: currentUser.nickname,
+            isHost: currentUser.id == selectedRoom!.hostId,
+            profileImageUrl: currentUser.profileImageUrl ?? '',
             photoBytes: null, // 초기에는 null로 설정
           )
         ];
@@ -1004,10 +1121,10 @@ class _MyHomePageState extends State<MyHomePage> {
             if (_renderChallengePageParticipants.isNotEmpty) {
               setState(() {
                 _renderChallengePageParticipants[0] = Participant(
-                  id: currentUser.userId,
-                  name: currentUser.username,
-                  isHost: currentUser.userId == selectedRoom!.hostId,
-                  profileImage: currentUser.profileImage,
+                  id: currentUser.id,
+                  name: currentUser.nickname,
+                  isHost: currentUser.id == selectedRoom!.hostId,
+                  profileImageUrl: currentUser.profileImageUrl ?? '',
                   photoBytes: bytes, // 실제 바이트 데이터
                 );
               });
@@ -1021,7 +1138,7 @@ class _MyHomePageState extends State<MyHomePage> {
         print('[DEBUG-RENDER] _simpleImageSelect 함수: ${_simpleImageSelect.runtimeType}');
         
         final challengePage = ChallengePage(
-          currentUserId: currentUser.userId,
+          currentUserId: currentUser.id,
           description: description,
           onDescriptionChanged: (value) { 
             print('[DEBUG-INPUT] 설명 변경됨: "$value"');
@@ -1058,8 +1175,8 @@ class _MyHomePageState extends State<MyHomePage> {
         return ResultsPage(
           participants: [
             Participant(
-              id: currentUser.userId,
-              name: currentUser.username,
+              id: currentUser.id,
+              name: currentUser.nickname,
               isHost: true,
             )
           ],
@@ -1072,12 +1189,12 @@ class _MyHomePageState extends State<MyHomePage> {
   // 이미 참가한 방인지 확인하는 도우미 메서드
   Future<bool> _isAlreadyJoined(String roomId) async {
     final participants = await ChallengeRepository.instance.getRoomParticipants(roomId);
-    return participants.contains(currentUser.userId);
+    return participants.contains(currentUser.id);
   }
 
   // onRoomSelected 함수 (방 선택 시 호출)
   void _onRoomSelected(ChallengeRoom room) async {
-    print('[DEBUG] 방 선택됨: roomId=${room.id}, 현재 사용자: ${currentUser.userId}');
+    print('[DEBUG] 방 선택됨: roomId=${room.id}, 현재 사용자: ${currentUser.id}');
     
     try {
       // 방에 참가 시도
@@ -1092,7 +1209,7 @@ class _MyHomePageState extends State<MyHomePage> {
         print('[DEBUG] 참가 전 참가자 목록: $beforeParticipants');
         
         // 참가 시도
-        final joinSuccess = await ChallengeRepository.instance.joinRoom(room.id, currentUser.userId);
+        final joinSuccess = await ChallengeRepository.instance.joinRoom(room.id, currentUser.id);
         
         // 참가 후 참가자 목록 확인
         final afterParticipants = await ChallengeRepository.instance.getRoomParticipants(room.id);
@@ -1158,10 +1275,10 @@ class _MyHomePageState extends State<MyHomePage> {
         // 참가자 목록 업데이트
         if (_renderChallengePageParticipants.isNotEmpty) {
           _renderChallengePageParticipants[0] = Participant(
-            id: currentUser.userId,
-            name: currentUser.username,
-            isHost: currentUser.userId == selectedRoom?.hostId,
-            profileImage: currentUser.profileImage,
+            id: currentUser.id,
+            name: currentUser.nickname,
+            isHost: currentUser.id == selectedRoom?.hostId,
+            profileImageUrl: currentUser.profileImageUrl ?? '',
             photoBytes: bytes,
           );
           

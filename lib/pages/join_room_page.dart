@@ -64,7 +64,7 @@ class _JoinRoomPageState extends State<JoinRoomPage> {
       // 도전방 참가
       final success = await ChallengeRepository.instance.joinRoom(
         room.id,
-        widget.currentUser.userId,
+        widget.currentUser.id,
       );
 
       if (success) {

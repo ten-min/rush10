@@ -12,15 +12,15 @@ class ProfileAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (kIsWeb && participant.profileImage.isNotEmpty) {
+    if (kIsWeb && participant.profileImageUrl.isNotEmpty) {
       try {
-        final bytes = base64Decode(participant.profileImage);
+        final bytes = base64Decode(participant.profileImageUrl);
         return CircleAvatar(backgroundImage: MemoryImage(bytes), radius: AppSizes.avatar);
       } catch (_) {
         return _defaultAvatar(participant.name);
       }
-    } else if (!kIsWeb && participant.profileImage.isNotEmpty) {
-      return CircleAvatar(backgroundImage: FileImage(File(participant.profileImage)), radius: AppSizes.avatar);
+    } else if (!kIsWeb && participant.profileImageUrl.isNotEmpty) {
+      return CircleAvatar(backgroundImage: FileImage(File(participant.profileImageUrl)), radius: AppSizes.avatar);
     } else {
       return _defaultAvatar(participant.name);
     }

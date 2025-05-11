@@ -32,12 +32,12 @@ class _UserProfilePageState extends State<UserProfilePage> {
   @override
   void initState() {
     super.initState();
-    _usernameController = TextEditingController(text: widget.user.username);
-    if (kIsWeb && widget.user.profileImage.isNotEmpty) {
-      _profileImageBytes = base64Decode(widget.user.profileImage);
+    _usernameController = TextEditingController(text: widget.user.nickname);
+    if (kIsWeb && (widget.user.profileImageUrl ?? '').isNotEmpty) {
+      _profileImageBytes = base64Decode(widget.user.profileImageUrl!);
       _profileImagePath = null;
     } else {
-      _profileImagePath = widget.user.profileImage.isNotEmpty ? widget.user.profileImage : null;
+      _profileImagePath = (widget.user.profileImageUrl ?? '').isNotEmpty ? widget.user.profileImageUrl : null;
     }
   }
 
@@ -94,8 +94,8 @@ class _UserProfilePageState extends State<UserProfilePage> {
 
       // 사용자 정보 업데이트
       final updatedUser = widget.user.copyWith(
-        username: _usernameController.text.trim(),
-        profileImage: imageData,
+        nickname: _usernameController.text.trim(),
+        profileImageUrl: imageData,
       );
 
       // DB에 저장
@@ -234,7 +234,7 @@ class _UserProfilePageState extends State<UserProfilePage> {
                         children: [
                           Expanded(
                             child: Text(
-                              widget.user.userId,
+                              widget.user.id,
                               style: const TextStyle(color: Colors.grey),
                             ),
                           ),

@@ -34,7 +34,7 @@ class _CompletedChallengesPageState extends State<CompletedChallengesPage> {
 
     try {
       // 사용자가 참여한 모든 방 로드
-      final userRooms = await ChallengeRepository.instance.getUserRooms(widget.currentUser.userId);
+      final userRooms = await ChallengeRepository.instance.getUserRooms(widget.currentUser.id);
       
       // 현재 시간 기준으로 종료된 방만 필터링 (10분 도전 시간 지난 방)
       final now = DateTime.now();
@@ -136,7 +136,7 @@ class _CompletedChallengesPageState extends State<CompletedChallengesPage> {
                 MaterialPageRoute(
                   builder: (context) => CertificationBoardPage(
                     room: room,
-                    currentUserId: widget.currentUser.userId,
+                    currentUserId: widget.currentUser.id,
                   ),
                 ),
               );
@@ -218,7 +218,7 @@ class _CompletedChallengesPageState extends State<CompletedChallengesPage> {
                           MaterialPageRoute(
                             builder: (context) => CertificationBoardPage(
                               room: room,
-                              currentUserId: widget.currentUser.userId,
+                              currentUserId: widget.currentUser.id,
                             ),
                           ),
                         );

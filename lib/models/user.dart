@@ -1,56 +1,105 @@
 // user.dart - 사용자 모델
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 class User {
-  final int? id;  // 데이터베이스 ID (자동 생성)
-  final String userId;  // 사용자 고유 ID
-  final String username;  // 사용자 이름
-  final String profileImage;  // 프로필 이미지 경로 (선택 사항)
-  final DateTime createdAt;  // 생성 시간
+  final String id;
+  final String email;
+  final String nickname;
+  final String? profileImageUrl;
+  final DateTime createdAt;
+  final DateTime updatedAt;
 
   User({
-    this.id,
-    required this.userId,
-    required this.username,
-    this.profileImage = '',
-    DateTime? createdAt,
-  }) : this.createdAt = createdAt ?? DateTime.now();
+    required this.id,
+    required this.email,
+    required this.nickname,
+    this.profileImageUrl,
+    required this.createdAt,
+    required this.updatedAt,
+  });
 
-  // JSON 변환을 위한 메소드
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'userId': userId,
-      'username': username,
-      'profileImage': profileImage,
-      'createdAt': createdAt.toIso8601String(),
-    };
-  }
-
-  // 맵에서 사용자 객체로 변환
-  factory User.fromMap(Map<String, dynamic> map) {
+  // Firestore에서 데이터를 가져올 때 사용하는 팩토리 메서드
+  factory User.fromFirestore(DocumentSnapshot doc) {
+    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
     return User(
-      id: map['id'],
-      userId: map['userId'],
-      username: map['username'],
-      profileImage: map['profileImage'] ?? '',
-      createdAt: DateTime.parse(map['createdAt']),
+      id: doc.id,
+      email: data['email'] ?? '',
+      nickname: data['nickname'] ?? '',
+      profileImageUrl: data['profileImageUrl'],
+      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      updatedAt: (data['updatedAt'] as Timestamp).toDate(),
     );
   }
 
-  // 복사본 생성 (정보 업데이트용)
+  // Firestore에 데이터를 저장할 때 사용하는 메서드
+  Map<String, dynamic> toFirestore() {
+    return {
+      'email': email,
+      'nickname': nickname,
+      'profileImageUrl': profileImageUrl,
+      'createdAt': Timestamp.fromDate(createdAt),
+      'updatedAt': Timestamp.fromDate(updatedAt),
+    };
+  }
+
+  // 사용자 정보 저장
+  Future<void> save() async {
+    final docRef = FirebaseFirestore.instance.collection('users').doc(id);
+    await docRef.set(toFirestore());
+  }
+
+  // 사용자 정보 업데이트
+  Future<void> update() async {
+    final docRef = FirebaseFirestore.instance.collection('users').doc(id);
+    await docRef.update(toFirestore());
+  }
+
+  // 사용자 정보 삭제
+  Future<void> delete() async {
+    final docRef = FirebaseFirestore.instance.collection('users').doc(id);
+    await docRef.delete();
+  }
+
+  // ID로 사용자 정보 가져오기
+  static Future<User?> getById(String id) async {
+    final docRef = FirebaseFirestore.instance.collection('users').doc(id);
+    final doc = await docRef.get();
+    if (doc.exists) {
+      return User.fromFirestore(doc);
+    }
+    return null;
+  }
+
+  // 이메일로 사용자 정보 가져오기
+  static Future<User?> getByEmail(String email) async {
+    final querySnapshot = await FirebaseFirestore.instance
+        .collection('users')
+        .where('email', isEqualTo: email)
+        .limit(1)
+        .get();
+    
+    if (querySnapshot.docs.isNotEmpty) {
+      return User.fromFirestore(querySnapshot.docs.first);
+    }
+    return null;
+  }
+
   User copyWith({
-    int? id,
-    String? userId,
-    String? username,
-    String? profileImage,
+    String? id,
+    String? email,
+    String? nickname,
+    String? profileImageUrl,
     DateTime? createdAt,
+    DateTime? updatedAt,
   }) {
     return User(
       id: id ?? this.id,
-      userId: userId ?? this.userId,
-      username: username ?? this.username,
-      profileImage: profileImage ?? this.profileImage,
+      email: email ?? this.email,
+      nickname: nickname ?? this.nickname,
+      profileImageUrl: profileImageUrl ?? this.profileImageUrl,
       createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 }

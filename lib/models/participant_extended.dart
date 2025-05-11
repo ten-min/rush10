@@ -48,7 +48,7 @@ class ParticipantExtended {
   Participant toParticipant() {
     return Participant(
       id: participantId,
-      name: user.username,
+      name: user.nickname,
       isHost: isHost,
       completed: completed,
       photoBytes: photoBytes,

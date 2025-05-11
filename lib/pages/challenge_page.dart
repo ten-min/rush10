@@ -443,10 +443,10 @@ class _ChallengePageState extends State<ChallengePage> {
                           final result = await CertificationRepository.instance.createPost(
                             roomId: widget.room.id,
                             userId: widget.currentUserId,
-                            username: widget.currentUser.username,
+                            username: widget.currentUser.nickname,
                             description: _textController.text.trim(),
                             photoBytes: actualPhotoBytes,
-                            profileImagePath: widget.currentUser.profileImage,
+                            profileImagePath: widget.currentUser.profileImageUrl,
                           );
                           
                           print('[DEBUG-BUTTON] 인증 저장 완료! ID: ${result.id}');

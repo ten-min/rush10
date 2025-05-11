@@ -19,6 +19,7 @@ import '../pages/room_list_page.dart';
 import '../main.dart';  // MyApp 접근
 import '../pages/certification_board_page.dart';
 import '../repositories/certification_repository.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class LobbyPage extends StatefulWidget {
   final DateTime? challengeStartTime;
@@ -84,9 +85,14 @@ class _LobbyPageState extends State<LobbyPage> {
     final ids = await ChallengeRepository.instance.getRoomParticipants(widget.room.id);
     
     // 항상 최신 사용자 정보를 가져오기 위해 데이터베이스에서 직접 조회
-    final currentUser = await DatabaseHelper.instance.getCurrentUser();
+    final currentUser = await DatabaseHelper.instance.getCurrentUser(
+      userId: widget.currentUser.id,
+      nickname: widget.currentUser.nickname,
+      email: widget.currentUser.email,
+      profileImageUrl: widget.currentUser.profileImageUrl,
+    );
     final otherUsers = await Future.wait(
-      ids.where((id) => id != currentUser.userId)
+      ids.where((id) => id != currentUser.id)
         .map((id) => DatabaseHelper.instance.getUserById(id))
     );
     
@@ -94,18 +100,18 @@ class _LobbyPageState extends State<LobbyPage> {
       participants = [
         // 현재 사용자는 항상 최신 정보 사용
         Participant(
-          id: currentUser.userId,
-          name: currentUser.username,
-          isHost: currentUser.userId == widget.room.hostId,
-          profileImage: currentUser.profileImage,
+          id: currentUser.id,
+          name: currentUser.nickname,
+          isHost: currentUser.id == widget.room.hostId,
+          profileImageUrl: currentUser.profileImageUrl ?? '',
         ),
         // 다른 사용자들
         ...otherUsers.where((user) => user != null).map((user) => 
           Participant(
-            id: user!.userId,
-            name: user.username,
-            isHost: user.userId == widget.room.hostId,
-            profileImage: user.profileImage,
+            id: user!.id,
+            name: user.nickname,
+            isHost: user.id == widget.room.hostId,
+            profileImageUrl: user.profileImageUrl ?? '',
           )
         )
       ];
@@ -114,7 +120,7 @@ class _LobbyPageState extends State<LobbyPage> {
 
   Future<void> _joinRoom() async {
     setState(() { isLoading = true; });
-    final success = await ChallengeRepository.instance.joinRoom(widget.room.id, widget.currentUser.userId);
+    final success = await ChallengeRepository.instance.joinRoom(widget.room.id, widget.currentUser.id);
     if (success) {
       await _loadParticipants();
       setState(() { isLoading = false; });
@@ -128,7 +134,7 @@ class _LobbyPageState extends State<LobbyPage> {
 
   Future<void> _leaveRoom() async {
     setState(() { isLoading = true; });
-    final success = await ChallengeRepository.instance.leaveRoom(widget.room.id, widget.currentUser.userId);
+    final success = await ChallengeRepository.instance.leaveRoom(widget.room.id, widget.currentUser.id);
     if (success) {
       await _loadParticipants();
       setState(() { isLoading = false; });
@@ -157,15 +163,15 @@ class _LobbyPageState extends State<LobbyPage> {
       context,
       MaterialPageRoute(
         builder: (context) => ChallengePage(
-          currentUserId: widget.currentUser.userId,
+          currentUserId: widget.currentUser.id,
           description: '',
           onDescriptionChanged: (value) {}, // 필요시 상태 관리
           participants: participants ?? [
             Participant(
-              id: widget.currentUser.userId,
-              name: widget.currentUser.username,
-              isHost: widget.currentUser.userId == widget.room.hostId,
-              profileImage: widget.currentUser.profileImage,
+              id: widget.currentUser.id,
+              name: widget.currentUser.nickname,
+              isHost: widget.currentUser.id == widget.room.hostId,
+              profileImageUrl: widget.currentUser.profileImageUrl ?? '',
             )
           ],
           handleImageSelect: () {}, // 필요시 구현
@@ -181,10 +187,10 @@ class _LobbyPageState extends State<LobbyPage> {
                   fit: fit ?? BoxFit.cover,
                 ),
               );
-            } else if (p.profileImage != null && p.profileImage!.isNotEmpty) {
+            } else if (p.profileImageUrl != null && p.profileImageUrl!.isNotEmpty) {
               if (kIsWeb) {
                 try {
-                  final bytes = base64Decode(p.profileImage!);
+                  final bytes = base64Decode(p.profileImageUrl!);
                   return ClipRRect(
                     borderRadius: borderRadius ?? BorderRadius.circular(8),
                     child: Image.memory(
@@ -201,7 +207,7 @@ class _LobbyPageState extends State<LobbyPage> {
                 return ClipRRect(
                   borderRadius: borderRadius ?? BorderRadius.circular(8),
                   child: Image.file(
-                    File(p.profileImage!),
+                    File(p.profileImageUrl!),
                     width: width,
                     height: height,
                     fit: fit ?? BoxFit.cover,
@@ -261,15 +267,15 @@ class _LobbyPageState extends State<LobbyPage> {
   }
 
   Widget buildProfileAvatar(Participant p) {
-    if (kIsWeb && p.profileImage != null && p.profileImage.isNotEmpty) {
+    if (kIsWeb && p.profileImageUrl != null && p.profileImageUrl.isNotEmpty) {
       try {
-        final bytes = base64Decode(p.profileImage);
+        final bytes = base64Decode(p.profileImageUrl);
         return CircleAvatar(backgroundImage: MemoryImage(bytes), radius: 18);
       } catch (_) {
         return defaultAvatar(p.name);
       }
-    } else if (!kIsWeb && p.profileImage != null && p.profileImage.isNotEmpty) {
-      return CircleAvatar(backgroundImage: FileImage(File(p.profileImage)), radius: 18);
+    } else if (!kIsWeb && p.profileImageUrl != null && p.profileImageUrl.isNotEmpty) {
+      return CircleAvatar(backgroundImage: FileImage(File(p.profileImageUrl)), radius: 18);
     } else {
       return defaultAvatar(p.name);
     }
@@ -287,7 +293,7 @@ class _LobbyPageState extends State<LobbyPage> {
       if (widget.room.startTime != null) {
         final now = DateTime.now();
         final diff = widget.room.startTime.difference(now);
-        final currentUserId = widget.currentUser.userId;
+        final currentUserId = widget.currentUser.id;
         final isAlreadyJoined = participants?.any((p) => p.id == currentUserId) ?? false;
         
         // 로비 화면에서 카운트다운 띄우기
@@ -321,11 +327,11 @@ class _LobbyPageState extends State<LobbyPage> {
   // 사용자가 이미 인증했는지 확인
   Future<void> _checkUserCertification() async {
     try {
-      print('[DEBUG] _checkUserCertification 호출됨 - 사용자ID: ${widget.currentUser.userId}, 방ID: ${widget.room.id}');
+      print('[DEBUG] _checkUserCertification 호출됨 - 사용자ID: ${widget.currentUser.id}, 방ID: ${widget.room.id}');
       
       final hasCertified = await CertificationRepository.instance.hasUserCertifiedRoom(
         widget.room.id, 
-        widget.currentUser.userId
+        widget.currentUser.id
       );
       
       print('[DEBUG] 인증 확인 결과: hasCertified=$hasCertified (이전 값: $_hasUserCertified)');
@@ -334,7 +340,7 @@ class _LobbyPageState extends State<LobbyPage> {
         _hasUserCertified = hasCertified;
       });
       
-      print('[DEBUG] 사용자 인증 확인: ${widget.currentUser.userId}, 인증됨=$_hasUserCertified');
+      print('[DEBUG] 사용자 인증 확인: ${widget.currentUser.id}, 인증됨=$_hasUserCertified');
     } catch (e) {
       print('[ERROR] 인증 확인 중 오류: $e');
     }
@@ -348,10 +354,10 @@ class _LobbyPageState extends State<LobbyPage> {
     
     // 디버그 정보 추가 - 참가자와 현재 사용자 정보 정확하게 비교
     print('[DEBUG] LobbyPage.build: 참가자 목록 = $participants');
-    print('[DEBUG] LobbyPage.build: 현재 사용자 ID = ${widget.currentUser.userId}');
+    print('[DEBUG] LobbyPage.build: 현재 사용자 ID = ${widget.currentUser.id}');
     
-    final isHost = widget.currentUser.userId == widget.room.hostId;
-    final String currentUserId = widget.currentUser.userId;
+    final isHost = widget.currentUser.id == widget.room.hostId;
+    final String currentUserId = widget.currentUser.id;
     
     // 참가자 목록에서 현재 사용자 ID를 정확히 확인 - ID 문자열 비교
     bool isAlreadyJoined = false;
@@ -539,7 +545,7 @@ class _LobbyPageState extends State<LobbyPage> {
                                   ? null
                                   : () async {
                                 setState(() { isLoading = true; });
-                                final success = await ChallengeRepository.instance.deleteRoom(widget.room.id, widget.currentUser.userId);
+                                final success = await ChallengeRepository.instance.deleteRoom(widget.room.id, widget.currentUser.id);
                                 setState(() { isLoading = false; });
                                 if (success && mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
@@ -638,7 +644,7 @@ class _LobbyPageState extends State<LobbyPage> {
                   MaterialPageRoute(
                     builder: (context) => CertificationBoardPage(
                       room: widget.room,
-                      currentUserId: widget.currentUser.userId,
+                      currentUserId: widget.currentUser.id,
                     ),
                   ),
                 ).then((_) {
@@ -662,7 +668,10 @@ class _LobbyPageState extends State<LobbyPage> {
 }
 
 void resetPrefs() async {
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.clear();
-  print('shared_preferences가 초기화되었습니다!');
+  // Firestore의 users 컬렉션 전체 삭제 (디버깅용)
+  final users = await FirebaseFirestore.instance.collection('users').get();
+  for (var doc in users.docs) {
+    await doc.reference.delete();
+  }
+  print('Firestore users 컬렉션이 초기화되었습니다!');
 }

@@ -40,8 +40,8 @@ class _CreateRoomPageState extends State<CreateRoomPage> {
       final room = await ChallengeRepository.instance.createRoom(
         title: _titleController.text,
         description: _descriptionController.text,
-        hostName: widget.currentUser.username,
-        hostId: widget.currentUser.userId,
+        hostName: widget.currentUser.nickname,
+        hostId: widget.currentUser.id,
         startTime: _startTime,
       );
 
