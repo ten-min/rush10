@@ -4,6 +4,7 @@ import '../models/challenge_room.dart';
 import '../models/user.dart';
 import '../repositories/challenge_repository.dart';
 import '../pages/certification_board_page.dart';
+import '../repositories/certification_repository.dart';
 
 class CompletedChallengesPage extends StatefulWidget {
   final User currentUser;
@@ -122,122 +123,150 @@ class _CompletedChallengesPageState extends State<CompletedChallengesPage> {
       itemBuilder: (context, index) {
         final room = sortedRooms[index];
         final endTime = room.startTime.add(const Duration(minutes: 10));
-        
-        return Card(
-          margin: const EdgeInsets.only(bottom: 16),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+
+        return FutureBuilder<bool>(
+          future: CertificationRepository.instance.hasUserCertifiedRoom(
+            room.id,
+            widget.currentUser.id,
           ),
-          child: InkWell(
-            onTap: () {
-              // 인증 목록 페이지로 이동
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => CertificationBoardPage(
-                    room: room,
-                    currentUserId: widget.currentUser.id,
-                  ),
-                ),
-              );
-            },
-            borderRadius: BorderRadius.circular(12),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF5A4FF3).withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Text(
-                          '완료됨',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Color(0xFF5A4FF3),
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+          builder: (context, snapshot) {
+            final certified = snapshot.data == true;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: InkWell(
+                onTap: () {
+                  // 인증 목록 페이지로 이동
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => CertificationBoardPage(
+                        room: room,
+                        currentUserId: widget.currentUser.id,
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        DateFormat('yyyy년 MM월 dd일 HH:mm').format(room.startTime),
-                        style: TextStyle(
-                          color: Colors.grey[600],
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    room.title,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    room.description,
-                    style: TextStyle(
-                      color: Colors.grey[700],
-                      fontSize: 14,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
+                  );
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.access_time, size: 16, color: Color(0xFF5A4FF3)),
-                      const SizedBox(width: 4),
-                      Text(
-                        '도전 종료: ${DateFormat('HH:mm').format(endTime)}',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Color(0xFF5A4FF3),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        // 인증 목록 페이지로 이동
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => CertificationBoardPage(
-                              room: room,
-                              currentUserId: widget.currentUser.id,
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF5A4FF3).withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Text(
+                              '완료됨',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFF5A4FF3),
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
-                        );
-                      },
-                      icon: const Icon(Icons.visibility, size: 16),
-                      label: const Text('인증 결과 보기'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF5A4FF3),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
+                          const SizedBox(width: 8),
+                          // 인증 여부 태그
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: certified
+                                  ? Colors.green.withOpacity(0.15)
+                                  : Colors.red.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              certified ? '제출' : '미제출',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: certified ? Colors.green : Colors.red,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            DateFormat('yyyy년 MM월 dd일 HH:mm').format(room.startTime),
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        room.title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
                         ),
                       ),
-                    ),
+                      const SizedBox(height: 8),
+                      Text(
+                        room.description,
+                        style: TextStyle(
+                          color: Colors.grey[700],
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          const Icon(Icons.access_time, size: 16, color: Color(0xFF5A4FF3)),
+                          const SizedBox(width: 4),
+                          Text(
+                            '도전 종료: ${DateFormat('HH:mm').format(endTime)}',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF5A4FF3),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            // 인증 목록 페이지로 이동
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => CertificationBoardPage(
+                                  room: room,
+                                  currentUserId: widget.currentUser.id,
+                                ),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.visibility, size: 16),
+                          label: const Text('인증 결과 보기'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF5A4FF3),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );

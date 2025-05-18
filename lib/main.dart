@@ -153,15 +153,28 @@ class _LoginGateState extends State<LoginGate> {
   Future<void> _checkKakaoLogin() async {
     try {
       final kakaoUser = await kakao.UserApi.instance.me();
-      setState(() {
-        _email = kakaoUser.kakaoAccount?.email;
-        _kakaoUserId = kakaoUser.id.toString();
-        _nickname = kakaoUser.kakaoAccount?.profile?.nickname ?? '사용자';
-        _profileImageUrl = kakaoUser.kakaoAccount?.profile?.profileImageUrl;
-      });
-      await saveKakaoUserToFirestore(kakaoUser);
+      final userId = kakaoUser.id.toString();
+      final email = kakaoUser.kakaoAccount?.email;
+      final profileImageUrl = kakaoUser.kakaoAccount?.profile?.profileImageUrl;
       // Firestore에서 users 문서 존재 여부 확인
-      final doc = await FirebaseFirestore.instance.collection('users').doc(_kakaoUserId!).get();
+      final doc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
+
+      String nickname;
+      if (doc.exists && doc.data()?['nickname'] != null && (doc.data()?['nickname'] as String).trim().isNotEmpty) {
+        nickname = doc.data()!['nickname'];
+      } else {
+        nickname = kakaoUser.kakaoAccount?.profile?.nickname ?? '사용자';
+      }
+
+      setState(() {
+        _email = email;
+        _kakaoUserId = userId;
+        _nickname = nickname;
+        _profileImageUrl = profileImageUrl;
+      });
+
+      await saveKakaoUserToFirestore(kakaoUser);
+
       if (!doc.exists) {
         setState(() {
           _needsSignup = true;
@@ -191,17 +204,22 @@ class _LoginGateState extends State<LoginGate> {
 
   Future<void> saveKakaoUserToFirestore(kakao.User kakaoUser) async {
     final userId = kakaoUser.id.toString();
-    final nickname = kakaoUser.kakaoAccount?.profile?.nickname ?? '사용자';
-    final profileImageUrl = kakaoUser.kakaoAccount?.profile?.profileImageUrl ?? '';
-    final email = kakaoUser.kakaoAccount?.email ?? '';
-    final now = DateTime.now();
-    await FirebaseFirestore.instance.collection('users').doc(userId).set({
-      'email': email,
-      'nickname': nickname,
-      'profileImageUrl': profileImageUrl,
-      'createdAt': now,
-      'updatedAt': now,
-    }, SetOptions(merge: true));
+    final docRef = FirebaseFirestore.instance.collection('users').doc(userId);
+    final doc = await docRef.get();
+
+    if (!doc.exists) {
+      final now = DateTime.now();
+      final nickname = kakaoUser.kakaoAccount?.profile?.nickname ?? '사용자';
+      final email = kakaoUser.kakaoAccount?.email ?? '';
+      final profileImageUrl = kakaoUser.kakaoAccount?.profile?.profileImageUrl ?? '';
+      await docRef.set({
+        'email': email,
+        'nickname': nickname,
+        'profileImageUrl': profileImageUrl,
+        'createdAt': now,
+        'updatedAt': now,
+      });
+    }
   }
 
   Future<void> _loginWithKakao() async {
@@ -270,9 +288,22 @@ class _LoginGateState extends State<LoginGate> {
         final nickname = res['kakao_account']?['profile']?['nickname'] ?? '사용자';
         final email = res['kakao_account']?['email'] ?? '';
         final profileImageUrl = res['kakao_account']?['profile']?['profile_image_url'] ?? '';
+        final now = DateTime.now();
 
         // Firestore에서 users 문서 존재 여부 확인
-        final doc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
+        final docRef = FirebaseFirestore.instance.collection('users').doc(userId);
+        final doc = await docRef.get();
+
+        if (!doc.exists) {
+          await docRef.set({
+            'email': email,
+            'nickname': nickname,
+            'profileImageUrl': profileImageUrl,
+            'createdAt': now,
+            'updatedAt': now,
+          });
+        }
+
         if (!doc.exists) {
           setState(() {
             _kakaoUserId = userId;
@@ -285,15 +316,6 @@ class _LoginGateState extends State<LoginGate> {
           });
           return;
         }
-
-        // Firestore에 저장
-        await FirebaseFirestore.instance.collection('users').doc(userId).set({
-          'email': email,
-          'nickname': nickname,
-          'profileImageUrl': profileImageUrl,
-          'createdAt': DateTime.now(),
-          'updatedAt': DateTime.now(),
-        }, SetOptions(merge: true));
 
         // Firestore에서 유저 정보 읽어오기
         final user = await DatabaseHelper.instance.getCurrentUser(
@@ -381,9 +403,14 @@ class _LoginGateState extends State<LoginGate> {
         await kakao.UserApi.instance.logout();
         print('카카오 모바일 로그아웃 성공');
       }
-      setState(() {
-        _isLoggedIn = false;
-      });
+      
+      // 로그아웃 후 로그인 페이지로 이동
+      if (mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const LoginGate()),
+        );
+      }
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('로그아웃 되었습니다.'), backgroundColor: Colors.green),
       );
@@ -397,26 +424,38 @@ class _LoginGateState extends State<LoginGate> {
 
   // 회원탈퇴 함수
   Future<void> withdrawUser() async {
-    final prefs = await SharedPreferences.getInstance();
-    final userId = _kakaoUserId;
-    if (userId != null) {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = _kakaoUserId;
+      
+      // Firestore에서 사용자 데이터 삭제
       await FirebaseFirestore.instance.collection('users').doc(userId).delete();
+      
+      // 로컬 저장소 데이터 삭제
+      await prefs.remove('kakao_user_id');
+      await prefs.remove('nickname');
+      await prefs.remove('current_user_name');
+      await prefs.remove('current_user_id');
+      await prefs.remove('current_user_profile_image');
+      
+      print('회원탈퇴: 사용자 정보 삭제 완료');
+      
+      // 회원탈퇴 후 로그인 페이지로 이동
+      if (mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const LoginGate()),
+        );
+      }
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('회원탈퇴가 완료되었습니다.'), backgroundColor: Colors.red),
+      );
+    } catch (e) {
+      print('회원탈퇴 실패: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('회원탈퇴 실패: $e'), backgroundColor: Colors.red),
+      );
     }
-    await prefs.remove('kakao_user_id');
-    await prefs.remove('nickname');
-    await prefs.remove('current_user_name');
-    await prefs.remove('current_user_id');
-    await prefs.remove('current_user_profile_image');
-    print('회원탈퇴: 사용자 정보 삭제 완료');
-    setState(() {
-      _isLoggedIn = false;
-      _kakaoUserId = null;
-      _nickname = null;
-      _needsSignup = false;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('회원탈퇴가 완료되었습니다.'), backgroundColor: Colors.red),
-    );
   }
 
   @override
@@ -466,36 +505,6 @@ class _LoginGateState extends State<LoginGate> {
           content = Stack(
             children: [
               MyHomePage(currentUser: _currentUser!),
-              Positioned(
-                top: 40,
-                right: 24,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: Colors.black,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                        elevation: 2,
-                      ),
-                      onPressed: kakaoLogout,
-                      child: const Text('로그아웃'),
-                    ),
-                    const SizedBox(height: 8),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red[50],
-                        foregroundColor: Colors.red,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                        elevation: 0,
-                      ),
-                      onPressed: withdrawUser,
-                      child: const Text('회원탈퇴'),
-                    ),
-                  ],
-                ),
-              ),
             ],
           );
         } else {
@@ -1019,12 +1028,100 @@ class _MyHomePageState extends State<MyHomePage> {
               ],
             ),
           ),
-        if (currentPage == Rush10Page.roomList || currentPage == Rush10Page.lobby)
-          AppBarProfile(
-            profileImageUrl: currentUser.profileImageUrl,
-            nickname: currentUser.nickname,
-            onTap: _navigateToProfilePage,
-          ),
+        Row(
+          children: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                elevation: 2,
+              ),
+              onPressed: () async {
+                try {
+                  // 웹 환경: JS SDK 사용
+                  final kakao = js.context['Kakao'];
+                  if (kakao != null && kakao['Auth'] != null) {
+                    kakao['Auth'].callMethod('logout');
+                    print('카카오 웹 로그아웃 성공');
+                  } else {
+                    // 모바일: Flutter SDK 사용
+                    await kakao.UserApi.instance.logout();
+                    print('카카오 모바일 로그아웃 성공');
+                  }
+                  
+                  // 로그아웃 후 로그인 페이지로 이동
+                  if (mounted) {
+                    Navigator.of(context).pushReplacement(
+                      MaterialPageRoute(builder: (_) => const LoginGate()),
+                    );
+                  }
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('로그아웃 되었습니다.'), backgroundColor: Colors.green),
+                  );
+                } catch (e) {
+                  print('카카오 로그아웃 실패: $e');
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('카카오 로그아웃 실패: $e'), backgroundColor: Colors.red),
+                  );
+                }
+              },
+              child: const Text('로그아웃'),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red[50],
+                foregroundColor: Colors.red,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                elevation: 0,
+              ),
+              onPressed: () async {
+                try {
+                  final prefs = await SharedPreferences.getInstance();
+                  final userId = currentUser.id;
+                  
+                  // Firestore에서 사용자 데이터 삭제
+                  await FirebaseFirestore.instance.collection('users').doc(userId).delete();
+                  
+                  // 로컬 저장소 데이터 삭제
+                  await prefs.remove('kakao_user_id');
+                  await prefs.remove('nickname');
+                  await prefs.remove('current_user_name');
+                  await prefs.remove('current_user_id');
+                  await prefs.remove('current_user_profile_image');
+                  
+                  print('회원탈퇴: 사용자 정보 삭제 완료');
+                  
+                  // 회원탈퇴 후 로그인 페이지로 이동
+                  if (mounted) {
+                    Navigator.of(context).pushReplacement(
+                      MaterialPageRoute(builder: (_) => const LoginGate()),
+                    );
+                  }
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('회원탈퇴가 완료되었습니다.'), backgroundColor: Colors.red),
+                  );
+                } catch (e) {
+                  print('회원탈퇴 실패: $e');
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('회원탈퇴 실패: $e'), backgroundColor: Colors.red),
+                  );
+                }
+              },
+              child: const Text('회원탈퇴'),
+            ),
+            const SizedBox(width: 16),
+            if (currentPage == Rush10Page.roomList || currentPage == Rush10Page.lobby)
+              AppBarProfile(
+                profileImageUrl: currentUser.profileImageUrl,
+                nickname: currentUser.nickname,
+                onTap: _navigateToProfilePage,
+              ),
+          ],
+        ),
       ],
     );
   }
